@@ -5,6 +5,7 @@ import io
 
 # Imports {{{
 import os
+import queue
 import re
 import sys
 import time
@@ -16,7 +17,7 @@ from qt.core import QAction, QActionGroup, QCoreApplication, QDialog, QDialogBut
 
 from calibre import as_unicode, force_unicode, preferred_encoding, prints, sanitize_file_name
 from calibre.constants import DEBUG
-from calibre.customize.ui import available_input_formats, available_output_formats, device_plugins, disabled_device_plugins
+from calibre.customize.ui import available_input_formats, available_output_formats, device_plugins, disabled_device_plugins, initialize_plugin
 from calibre.devices.errors import (
     BlacklistedDevice,
     FreeSpaceError,
@@ -35,7 +36,6 @@ from calibre.ebooks.metadata import authors_to_string
 from calibre.gui2 import (
     Dispatcher,
     FunctionDispatcher,
-    choose_dir,
     config,
     dynamic,
     error_dialog,
@@ -57,8 +57,6 @@ from calibre.utils.filenames import ascii_filename
 from calibre.utils.img import scale_image
 from calibre.utils.ipc.job import BaseJob
 from calibre.utils.localization import ngettext
-from polyglot import queue
-from polyglot.builtins import string_or_unicode
 
 # }}}
 
@@ -95,7 +93,7 @@ class DeviceJob(BaseJob):  # {{{
 
         try:
             self.callback_on_done(self)
-        except:
+        except Exception:
             pass
         if DEBUG:
             prints('DeviceJob:', self.id, self.description,
@@ -200,7 +198,7 @@ class DeviceManager(Thread):  # {{{
         self.allow_connect_slot = allow_connect_slot
         self.jobs           = queue.Queue(0)
         self.job_steps      = queue.Queue(0)
-        self.keep_going     = True
+        self.shutdown_event = Event()
         self.job_manager    = job_manager
         self.reported_errors = set()
         self.shown_open_popups = set()
@@ -256,7 +254,7 @@ class DeviceManager(Thread):  # {{{
                 continue
             except OpenFailed:
                 raise
-            except:
+            except Exception:
                 tb = traceback.format_exc()
                 if DEBUG or tb not in self.reported_errors:
                     self.reported_errors.add(tb)
@@ -297,7 +295,7 @@ class DeviceManager(Thread):  # {{{
                 break
         try:
             self.connected_device.post_yank_cleanup()
-        except:
+        except Exception:
             pass
         if self.connected_device in self.ejected_devices:
             self.ejected_devices.remove(self.connected_device)
@@ -319,6 +317,10 @@ class DeviceManager(Thread):  # {{{
             self.connected_slot(False, None)
 
     def detect_device(self):
+        if self.is_device_connected and self.connected_device_kind in {'folder', 'folder-as-device'}:
+            if not self.connected_device.is_folder_still_available():
+                self.connected_device_removed()
+            return
         self.scanner.scan()
 
         if self.is_device_connected:
@@ -342,23 +344,21 @@ class DeviceManager(Thread):  # {{{
             for dev in self.unmanaged_devices:
                 try:
                     cd = dev.detect_managed_devices(self.scanner.devices)
-                except:
-                    prints('Error during device detection for %s:'%dev)
+                except Exception:
+                    prints(f'Error during device detection for {dev}:')
                     traceback.print_exc()
                 else:
                     if cd is not None:
                         try:
                             dev.open(cd, self.current_library_uuid)
                         except BlacklistedDevice as e:
-                            prints('Ignoring blacklisted device: %s'%
-                                    as_unicode(e))
+                            prints(f'Ignoring blacklisted device: {as_unicode(e)}')
                         except OpenActionNeeded as e:
                             if e.only_once_id not in self.open_feedback_only_once_seen:
                                 self.open_feedback_only_once_seen.add(e.only_once_id)
                                 self.open_feedback_msg(e.device_name, e)
-                        except:
-                            prints('Error while trying to open %s (Driver: %s)'%
-                                    (cd, dev))
+                        except Exception:
+                            prints(f'Error while trying to open {cd} (Driver: {dev})')
                             traceback.print_exc()
                         else:
                             self.after_device_connect(dev, 'unmanaged-device')
@@ -393,8 +393,8 @@ class DeviceManager(Thread):  # {{{
     # Mount devices that don't use USB, such as the folder device
     # This will be called on the GUI thread. Because of this, we must store
     # information that the scanner thread will use to do the real work.
-    def mount_device(self, kls, kind, path):
-        self.mount_connection_requests.put((kls, kind, path))
+    def mount_device(self, kls, kind, path, model_metadata=None):
+        self.mount_connection_requests.put((kls, kind, path, model_metadata))
 
     # disconnect a device
     def umount_device(self, *args):
@@ -427,8 +427,8 @@ class DeviceManager(Thread):  # {{{
         try:
             name = dev.__class__.__name__
             dev.startup()
-        except:
-            prints('Startup method for device %s threw exception'%name)
+        except Exception:
+            prints(f'Startup method for device {name} threw exception')
             traceback.print_exc()
 
     def run(self):
@@ -440,15 +440,30 @@ class DeviceManager(Thread):  # {{{
                 self.dynamic_plugins[n] = d
         self.devices_initialized.set()
 
-        while self.keep_going:
-            kls = None
+        while not self.shutdown_event.is_set():
+            kls = model_metadata = None
             while True:
                 try:
-                    (kls,device_kind, folder_path) = \
-                                self.mount_connection_requests.get_nowait()
+                    kls, device_kind, folder_path, model_metadata = self.mount_connection_requests.get_nowait()
                 except queue.Empty:
                     break
-            if kls is not None:
+            if model_metadata is not None:
+                try:
+                    for candidate in self.devices:
+                        if type(candidate) is model_metadata.driver_class:
+                            dev = candidate
+                            break
+                    else:
+                        # new device instance so run startup and set flag to
+                        # run shutdown on disconnect
+                        dev = initialize_plugin(model_metadata.driver_class)
+                        self.run_startup(dev)
+                        self.call_shutdown_on_disconnect = True
+                    self.do_connect([[dev, model_metadata.detected_device(folder_path)],], device_kind=device_kind)
+                except Exception:
+                    prints(f'Unable to open {device_kind} as device ({folder_path})')
+                    traceback.print_exc()
+            elif kls is not None:
                 try:
                     dev = kls(folder_path)
                     # We just created a new device instance. Call its startup
@@ -457,8 +472,8 @@ class DeviceManager(Thread):  # {{{
                     self.run_startup(dev)
                     self.call_shutdown_on_disconnect = True
                     self.do_connect([[dev, None],], device_kind=device_kind)
-                except:
-                    prints('Unable to open %s as device (%s)'%(device_kind, folder_path))
+                except Exception:
+                    prints(f'Unable to open {device_kind} as device ({folder_path})')
                     traceback.print_exc()
             else:
                 self.detect_device()
@@ -480,13 +495,13 @@ class DeviceManager(Thread):  # {{{
                 else:
                     break
             if do_sleep:
-                time.sleep(self.sleep_time)
+                self.shutdown_event.wait(self.sleep_time)
 
         # We are exiting. Call the shutdown method for each plugin
         for p in self.devices:
             try:
                 p.shutdown()
-            except:
+            except Exception:
                 pass
 
     def create_job_step(self, func, done, description, to_job, args=[], kwargs={}):
@@ -506,7 +521,7 @@ class DeviceManager(Thread):  # {{{
     def has_card(self):
         try:
             return bool(self.device.card_prefix())
-        except:
+        except Exception:
             return False
 
     def _debug_detection(self):
@@ -526,7 +541,7 @@ class DeviceManager(Thread):  # {{{
         info = self.device.get_device_information(end_session=False)
         if len(info) < 5:
             info = tuple(list(info) + [{}])
-        info = [i.replace('\x00', '').replace('\x01', '') if isinstance(i, string_or_unicode) else i
+        info = [i.replace('\x00', '').replace('\x01', '') if isinstance(i, str) else i
                  for i in info]
         cp = self.device.card_prefix(end_session=False)
         fs = self.device.free_space()
@@ -566,7 +581,7 @@ class DeviceManager(Thread):  # {{{
         mainlist = self.device.books(oncard=None, end_session=False)
         cardalist = self.device.books(oncard='carda')
         cardblist = self.device.books(oncard='cardb')
-        return (mainlist, cardalist, cardblist)
+        return mainlist, cardalist, cardblist
 
     def books(self, done, add_as_step_to_job=None):
         '''Return callable that returns the list of books on device as two booklists'''
@@ -638,7 +653,7 @@ class DeviceManager(Thread):  # {{{
                                 if nuke_comments is not None:
                                     mi.comments = nuke_comments
                                 set_metadata(stream, newmi, stream_type=ext)
-                        except:
+                        except Exception:
                             if DEBUG:
                                 prints(traceback.format_exc(), file=sys.__stdout__)
 
@@ -651,7 +666,7 @@ class DeviceManager(Thread):  # {{{
                     try:
                         if mi.cover:
                             os.remove(mi.cover)
-                    except:
+                    except Exception:
                         pass
 
     def upload_books(self, done, files, names, on_card=None, titles=None,
@@ -742,7 +757,7 @@ class DeviceManager(Thread):  # {{{
             d = self.dynamic_plugins.get(name, None)
             if d:
                 return True
-        except:
+        except Exception:
             pass
         return False
 
@@ -764,8 +779,7 @@ class DeviceAction(QAction):  # {{{
         self.a_s.emit(self)
 
     def __repr__(self):
-        return self.__class__.__name__ + ':%s:%s:%s'%(self.dest, self.delete,
-                self.specific)
+        return self.__class__.__name__ + f':{self.dest}:{self.delete}:{self.specific}'
     # }}}
 
 
@@ -785,7 +799,7 @@ class DeviceMenu(QMenu):  # {{{
         self.set_default_menu.setIcon(QIcon.ic('config.png'))
 
         basic_actions = [
-                ('main:', False, False,  'reader.png',
+                ('main:', False, False, 'reader.png',
                     _('Send to main memory')),
                 ('carda:0', False, False, 'sd.png',
                     _('Send to storage card A')),
@@ -794,16 +808,16 @@ class DeviceMenu(QMenu):  # {{{
         ]
 
         delete_actions = [
-                ('main:', True, False,   'reader.png',
+                ('main:', True, False, 'reader.png',
                     _('Main memory')),
-                ('carda:0', True, False,  'sd.png',
+                ('carda:0', True, False, 'sd.png',
                     _('Storage card A')),
-                ('cardb:0', True, False,  'sd.png',
+                ('cardb:0', True, False, 'sd.png',
                     _('Storage card B')),
         ]
 
         specific_actions = [
-                ('main:', False, True,  'reader.png',
+                ('main:', False, True, 'reader.png',
                     _('Main memory')),
                 ('carda:0', False, True, 'sd.png',
                     _('Storage card A')),
@@ -898,19 +912,18 @@ class DeviceMenu(QMenu):  # {{{
             if action.dest in ('main:', 'carda:0', 'cardb:0'):
                 if not enable:
                     action.setEnabled(False)
-                else:
-                    if action.dest == 'main:':
+                elif action.dest == 'main:':
+                    action.setEnabled(True)
+                elif action.dest == 'carda:0':
+                    if card_prefix and card_prefix[0] is not None:
                         action.setEnabled(True)
-                    elif action.dest == 'carda:0':
-                        if card_prefix and card_prefix[0] is not None:
-                            action.setEnabled(True)
-                        else:
-                            action.setEnabled(False)
-                    elif action.dest == 'cardb:0':
-                        if card_prefix and card_prefix[1] is not None:
-                            action.setEnabled(True)
-                        else:
-                            action.setEnabled(False)
+                    else:
+                        action.setEnabled(False)
+                elif action.dest == 'cardb:0':
+                    if card_prefix and card_prefix[1] is not None:
+                        action.setEnabled(True)
+                    else:
+                        action.setEnabled(False)
 
         annot_enable = enable and getattr(device, 'SUPPORTS_ANNOTATIONS', False)
         self.annotation_action.setEnabled(annot_enable)
@@ -998,16 +1011,20 @@ class DeviceMixin:  # {{{
         self.default_thumbnail_prefs = prefs = override_prefs(cprefs)
         scale_cover(prefs, ratio)
 
-    def connect_to_folder_named(self, folder):
+    def connect_to_folder_named(self, folder, model_metadata=None):
         if os.path.exists(folder) and os.path.isdir(folder):
-            self.device_manager.mount_device(kls=FOLDER_DEVICE, kind='folder',
-                    path=folder)
+            if model_metadata is not None:
+                self.device_manager.mount_device(kls=None, kind='folder-as-device', path=folder, model_metadata=model_metadata)
+            else:
+                self.device_manager.mount_device(kls=FOLDER_DEVICE, kind='folder', path=folder)
 
     def connect_to_folder(self):
-        dir = choose_dir(self, 'Select Device Folder',
-                             _('Select folder to open as device'))
-        if dir is not None:
-            self.device_manager.mount_device(kls=FOLDER_DEVICE, kind='folder', path=dir)
+        from calibre.gui2.dialogs.connect_to_folder import ConnectToFolder
+        d = ConnectToFolder(self)
+        if d.exec() == QDialog.DialogCode.Accepted:
+            folder_path, model_metadata = d.ans
+            if folder_path:
+                self.connect_to_folder_named(folder_path, model_metadata)
 
     # disconnect from folder devices
     def disconnect_mounted_device(self):
@@ -1101,8 +1118,7 @@ class DeviceMixin:  # {{{
             func = {UserFeedback.ERROR:error_dialog,
                     UserFeedback.WARNING:warning_dialog,
                     UserFeedback.INFO:info_dialog}[ex.level]
-            return func(self, _('Failed'), ex.msg, det_msg=ex.details if
-                    ex.details else '', show=True)
+            return func(self, _('Failed'), ex.msg, det_msg=ex.details or '', show=True)
 
         try:
             if 'Could not read 32 bytes on the control bus.' in \
@@ -1112,17 +1128,17 @@ class DeviceMixin:  # {{{
                              'device. Please unplug and reconnect the device '
                              'or reboot.')).show()
                 return
-        except:
+        except Exception:
             pass
         if getattr(job, 'exception', None).__class__.__name__ == 'MTPInvalidSendPathError':
             try:
                 from calibre.gui2.device_drivers.mtp_config import SendError
                 return SendError(self, job.exception).exec()
-            except:
+            except Exception:
                 traceback.print_exc()
         try:
             prints(job.details, file=sys.stderr)
-        except:
+        except Exception:
             pass
         if not self.device_error_dialog.isVisible():
             self.device_error_dialog.set_details(job.details)
@@ -1297,7 +1313,7 @@ class DeviceMixin:  # {{{
             if not self.current_view().currentIndex().isValid():
                 self.current_view().set_current_row()
             self.current_view().refresh_book_details()
-        except:
+        except Exception:
             traceback.print_exc()
 
     def dispatch_sync_event(self, dest, delete, specific):
@@ -1380,7 +1396,7 @@ class DeviceMixin:  # {{{
                                  self.device_manager.device.THUMBNAIL_WIDTH,
                                  self.device_manager.device.THUMBNAIL_HEIGHT,
                                  preserve_aspect_ratio=False)
-            except:
+            except Exception:
                 pass
             return
         ht = self.device_manager.device.THUMBNAIL_HEIGHT \
@@ -1388,7 +1404,7 @@ class DeviceMixin:  # {{{
         try:
             return scale_image(data, ht, ht,
                     compression_quality=self.device_manager.device.THUMBNAIL_COMPRESSION_QUALITY)
-        except:
+        except Exception:
             pass
 
     def sync_catalogs(self, send_ids=None, do_auto_convert=True):
@@ -1432,15 +1448,14 @@ class DeviceMixin:  # {{{
                 if not isinstance(prefix, str):
                     prefix = prefix.decode(preferred_encoding, 'replace')
                 prefix = ascii_filename(prefix)
-                names.append('%s_%d%s'%(prefix, book_id,
-                    os.path.splitext(files[-1])[1]))
+                names.append(f'{prefix}_{book_id}{os.path.splitext(files[-1])[1]}')
                 self.update_thumbnail(mi)
             dynamic.set('catalogs_to_be_synced', set())
             if files:
                 remove = []
-                space = {self.location_manager.free[0] : None,
-                    self.location_manager.free[1] : 'carda',
-                    self.location_manager.free[2] : 'cardb'}
+                space = {self.location_manager.free[0]: None,
+                    self.location_manager.free[1]: 'carda',
+                    self.location_manager.free[2]: 'cardb'}
                 on_card = space.get(sorted(space.keys(), reverse=True)[0], None)
                 self.upload_books(files, names, metadata,
                         on_card=on_card,
@@ -1454,7 +1469,7 @@ class DeviceMixin:  # {{{
         try:
             ans = self.library_view.model().db.new_api.pref('news_to_be_synced',
                     [])
-        except:
+        except Exception:
             import traceback
             traceback.print_exc()
         return set(ans)
@@ -1464,7 +1479,7 @@ class DeviceMixin:  # {{{
         try:
             self.library_view.model().db.new_api.set_pref('news_to_be_synced',
                     list(ids))
-        except:
+        except Exception:
             import traceback
             traceback.print_exc()
 
@@ -1510,27 +1525,26 @@ class DeviceMixin:  # {{{
                 if not isinstance(prefix, str):
                     prefix = prefix.decode(preferred_encoding, 'replace')
                 prefix = ascii_filename(prefix)
-                names.append('%s_%d%s'%(prefix, book_id,
-                    os.path.splitext(files[-1])[1]))
+                names.append(f'{prefix}_{book_id}{os.path.splitext(files[-1])[1]}')
                 self.update_thumbnail(mi)
             self.news_to_be_synced = set()
             if config['upload_news_to_device'] and files:
                 remove = ids if del_on_upload else []
-                space = {self.location_manager.free[0] : None,
-                    self.location_manager.free[1] : 'carda',
-                    self.location_manager.free[2] : 'cardb'}
+                space = {self.location_manager.free[0]: None,
+                    self.location_manager.free[1]: 'carda',
+                    self.location_manager.free[2]: 'cardb'}
                 on_card = space.get(sorted(space.keys(), reverse=True)[0], None)
                 try:
                     total_size = sum(os.stat(f).st_size for f in files)
-                except:
+                except Exception:
                     try:
                         import traceback
                         traceback.print_exc()
-                    except:
+                    except Exception:
                         pass
                     total_size = self.location_manager.free[0]
                 loc = tweaks['send_news_to_device_location']
-                loc_index = {"carda": 1, "cardb": 2}.get(loc, 0)
+                loc_index = {'carda': 1, 'cardb': 2}.get(loc, 0)
                 if self.location_manager.free[loc_index] > total_size + (1024**2):
                     # Send news to main memory if enough space available
                     # as some devices like the Nook Color cannot handle
@@ -1589,7 +1603,7 @@ class DeviceMixin:  # {{{
                 if not isinstance(prefix, str):
                     prefix = prefix.decode(preferred_encoding, 'replace')
                 prefix = ascii_filename(prefix)
-                names.append('%s_%d%s'%(prefix, id, os.path.splitext(f)[1]))
+                names.append(f'{prefix}_{id}{os.path.splitext(f)[1]}')
         remove = remove_ids if delete_from_library else []
         self.upload_books(gf, names, good, on_card, memory=(_files, remove))
         self.status_bar.show_message(_('Sending books to device.'), 5000)
@@ -1606,11 +1620,10 @@ class DeviceMixin:  # {{{
                         auto.append(id)
                     else:
                         bad.append(self.library_view.model().db.title(id, index_is_id=True))
+                elif specific_format in list(set(settings.format_map).intersection(set(available_output_formats()))):
+                    auto.append(id)
                 else:
-                    if specific_format in list(set(settings.format_map).intersection(set(available_output_formats()))):
-                        auto.append(id)
-                    else:
-                        bad.append(self.library_view.model().db.title(id, index_is_id=True))
+                    bad.append(self.library_view.model().db.title(id, index_is_id=True))
 
         if auto != []:
             format = specific_format if specific_format in \
@@ -1631,7 +1644,7 @@ class DeviceMixin:  # {{{
                     self.iactions['Convert Books'].auto_convert(auto, on_card, format)
 
         if bad:
-            bad = '\n'.join('%s'%(i,) for i in bad)
+            bad = '\n'.join(f'{i}' for i in bad)
             d = warning_dialog(self, _('No suitable formats'),
                     _('Could not upload the following books to the device, '
                 'as no suitable formats were found. Convert the book(s) to a '
@@ -1714,7 +1727,7 @@ class DeviceMixin:  # {{{
                 d = error_dialog(self, _('No space on device'),
                                  _('<p>Cannot upload books to device there '
                                  'is no more free space available ')+where+
-                                 '</p>\n<ul>%s</ul>'%(titles,))
+                                 f'</p>\n<ul>{titles}</ul>')
                 d.exec()
             elif isinstance(job.exception, WrongDestinationError):
                 error_dialog(self, _('Incorrect destination'),
@@ -1726,7 +1739,7 @@ class DeviceMixin:  # {{{
         try:
             self.device_manager.add_books_to_metadata(job.result,
                     metadata, self.booklists())
-        except:
+        except Exception:
             traceback.print_exc()
             raise
 
@@ -1759,7 +1772,7 @@ class DeviceMixin:  # {{{
                             'KEEP_TEMP_FILES_AFTER_UPLOAD', False)
                     if rem and 'caltmpfmt.' in f:
                         os.remove(f)
-                except:
+                except Exception:
                     pass
 
     def update_metadata_on_device(self):
@@ -1844,7 +1857,7 @@ class DeviceMixin:  # {{{
         # library view. In this case, simply give up
         try:
             db = self.library_view.model().db
-        except:
+        except Exception:
             return False
 
         # Define the cleaning function
@@ -1900,7 +1913,7 @@ class DeviceMixin:  # {{{
         books_with_future_dates = []
         first_call_to_synchronize_with_db = [True]
 
-        def update_book(id_, book) :
+        def update_book(id_, book):
             if not update_metadata:
                 return
             mi = db.get_metadata(id_, index_is_id=True, get_cover=get_covers)
@@ -1932,7 +1945,7 @@ class DeviceMixin:  # {{{
                          max(book.thumbnail[0], book.thumbnail[1]) != desired_thumbnail_height
                         )
                        )
-            except:
+            except Exception:
                 return True
 
         def get_by_author(book, d, author):
@@ -2049,7 +2062,7 @@ class DeviceMixin:  # {{{
                            len(book_ids_to_refresh), 'books')
                     self.library_view.model().refresh_ids(book_ids_to_refresh,
                                       current_row=self.library_view.currentIndex().row())
-                except:
+                except Exception:
                     # This shouldn't ever happen, but just in case ...
                     traceback.print_exc()
 
@@ -2071,15 +2084,14 @@ class DeviceMixin:  # {{{
                             mi = db.new_api.get_metadata(id_, get_cover=True)
                             self.update_thumbnail(mi)
                             metadata.append(mi)
-                        except:
+                        except Exception:
                             prints('Problem creating temporary file for', fmt_name)
                             traceback.print_exc()
-                    else:
-                        if DEBUG:
-                            prints("DeviceJob: book doesn't have that format")
+                    elif DEBUG:
+                        prints("DeviceJob: book doesn't have that format")
                 if files:
                     self.upload_books(files, names, metadata)
-            except:
+            except Exception:
                 # Shouldn't ever happen, but just in case
                 traceback.print_exc()
 
@@ -2093,7 +2105,7 @@ class DeviceMixin:  # {{{
                                  show=False,
                                  show_copy_button=True)
                     d.show()
-            except:
+            except Exception:
                 traceback.print_exc()
 
         debug_print('DeviceJob: set_books_in_library finished: time=', time.time() - start_time)

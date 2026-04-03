@@ -11,10 +11,12 @@ def resize(x):
     elif '?crop=' in x:
         return x + '&resize=600'
 
+
 def absurl(url):
     if url.startswith('/'):
         url = 'https://www.thetimes.com' + url
     return url
+
 
 class times(BasicNewsRecipe):
     title = 'The Times and Sunday Times'
@@ -38,8 +40,10 @@ class times(BasicNewsRecipe):
     browser_type = 'webengine'
 
     def get_cover_url(self):
-        soup = self.index_to_soup('https://www.frontpages.com/the-times/')
-        return 'https://www.frontpages.com' + soup.find('img', attrs={'id':'giornale-img'})['src']
+        soup = self.index_to_soup('https://www.frontpages.com/uk-newspapers/')
+        for img in soup.findAll('img', src=True):
+            if 'the-times' in img['src']:
+                return 'https://www.frontpages.com' + img['src']
 
     extra_css = '''
         .tc-view__TcView-nuazoi-0, [class^="keylines__KeylineItem-"], .sub { font-size:small; }
@@ -63,7 +67,7 @@ class times(BasicNewsRecipe):
     ]
 
     remove_tags_after = [
-        dict(name = 'div', attrs={'id':'paywall-portal-article-footer'})
+        dict(name='div', attrs={'id':'paywall-portal-article-footer'})
     ]
 
     def preprocess_html(self, soup):

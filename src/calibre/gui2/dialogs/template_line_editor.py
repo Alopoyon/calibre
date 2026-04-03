@@ -13,7 +13,6 @@ from calibre.gui2.dialogs.template_dialog import TemplateDialog
 
 
 class TemplateLineEditor(QLineEdit):
-
     '''
     Extend the context menu of a QLineEdit to include more actions.
     '''
@@ -27,10 +26,10 @@ class TemplateLineEditor(QLineEdit):
             db = gui.current_db
             mi = []
             for _id in view.get_selected_ids()[:5]:
-                mi.append(db.new_api.get_metadata(_id))
+                mi.append(db.new_api.get_proxy_metadata(_id))
             self.mi = mi
         except Exception as e:
-            prints(f'TemplateLineEditor: exception fetching metadata: {str(e)}')
+            prints(f'TemplateLineEditor: exception fetching metadata: {e}')
             self.mi = None
         self.setClearButtonEnabled(True)
 

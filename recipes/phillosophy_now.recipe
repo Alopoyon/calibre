@@ -33,7 +33,7 @@ class PhilosophyNow(BasicNewsRecipe):
         .articleImageCaption { font-size:small; text-align:center; }
         em, blockquote { color:#202020; }
     '''
-    
+
     recipe_specific_options = {
         'issue': {
             'short': 'Enter the Issue Number you want to download ',
@@ -82,7 +82,7 @@ class PhilosophyNow(BasicNewsRecipe):
                 if section_title not in feeds:
                     feeds[section_title] = []
                 feeds[section_title] += articles
-        ans = [(key, val) for key, val in feeds.items()]
+        ans = list(feeds.items())
         return ans
 
     # PN changes the content it delivers based on cookies, so the
@@ -94,7 +94,7 @@ class PhilosophyNow(BasicNewsRecipe):
         return self.get_browser()
 
     def open_novisit(self, *args, **kwargs):
-        br = browser()
+        br = browser(verify_ssl_certificates=False)
         return br.open_novisit(*args, **kwargs)
 
     open = open_novisit

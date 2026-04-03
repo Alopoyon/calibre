@@ -9,7 +9,7 @@ __docformat__ = 'restructuredtext en'
 import os
 import re
 import struct
-import zlib
+from compression import zlib
 
 from calibre import CurrentDir
 from calibre.ebooks import DRMError
@@ -67,7 +67,7 @@ class Reader132(FormatReader):
             if self.header_record.compression in (260, 272):
                 raise DRMError('eReader DRM is not supported.')
             else:
-                raise EreaderError('Unknown book compression %i.' % self.header_record.compression)
+                raise EreaderError(f'Unknown book compression {self.header_record.compression}.')
 
         from calibre.ebooks.metadata.pdb import get_metadata
         self.mi = get_metadata(stream, False)
@@ -89,6 +89,15 @@ class Reader132(FormatReader):
         name = data[4:4 + 32].strip(b'\x00').decode(self.encoding or 'cp1252')
         img = data[62:]
         return name, img
+
+    def image_dest(self, name, cwd):
+        base = os.path.abspath(cwd)
+        if not base.endswith(os.sep):
+            base += os.sep
+        ans = os.path.abspath(os.path.join(base, name))
+        if os.path.commonprefix([ans, base]) != base:
+            ans = ''
+        return ans
 
     def get_text_page(self, number):
         '''
@@ -112,22 +121,22 @@ class Reader132(FormatReader):
         title = self.mi.title
         if not isinstance(title, str):
             title = title.decode('utf-8', 'replace')
-        html = '<html><head><title>%s</title></head><body>' % title
+        html = f'<html><head><title>{title}</title></head><body>'
 
         pml = ''
         for i in range(1, self.header_record.num_text_pages + 1):
-            self.log.debug('Extracting text page %i' % i)
+            self.log.debug(f'Extracting text page {i}')
             pml += self.get_text_page(i)
         hizer = PML_HTMLizer()
         html += hizer.parse_pml(pml, 'index.html')
         toc = hizer.get_toc()
 
         if self.header_record.footnote_count > 0:
-            html += '<br /><h1>%s</h1>' % _('Footnotes')
-            footnoteids = re.findall(
-                '\\w+(?=\x00)', self.section_data(self.header_record.footnote_offset).decode('cp1252' if self.encoding is None else self.encoding))
+            html += '<br /><h1>{}</h1>'.format(_('Footnotes'))
+            footnoteids = re.findall(r'\w+(?=\x00)',
+                self.section_data(self.header_record.footnote_offset).decode('cp1252' if self.encoding is None else self.encoding))
             for fid, i in enumerate(range(self.header_record.footnote_offset + 1, self.header_record.footnote_offset + self.header_record.footnote_count)):
-                self.log.debug('Extracting footnote page %i' % i)
+                self.log.debug(f'Extracting footnote page {i}')
                 if fid < len(footnoteids):
                     fid = footnoteids[fid]
                 else:
@@ -135,11 +144,11 @@ class Reader132(FormatReader):
                 html += footnote_to_html(fid, self.decompress_text(i))
 
         if self.header_record.sidebar_count > 0:
-            html += '<br /><h1>%s</h1>' % _('Sidebar')
-            sidebarids = re.findall(
-                '\\w+(?=\x00)', self.section_data(self.header_record.sidebar_offset).decode('cp1252' if self.encoding is None else self.encoding))
+            html += '<br /><h1>{}</h1>'.format(_('Sidebar'))
+            sidebarids = re.findall(r'\w+(?=\x00)',
+                self.section_data(self.header_record.sidebar_offset).decode('cp1252' if self.encoding is None else self.encoding))
             for sid, i in enumerate(range(self.header_record.sidebar_offset + 1, self.header_record.sidebar_offset + self.header_record.sidebar_count)):
-                self.log.debug('Extracting sidebar page %i' % i)
+                self.log.debug(f'Extracting sidebar page {i}')
                 if sid < len(sidebarids):
                     sid = sidebarids[sid]
                 else:
@@ -156,13 +165,14 @@ class Reader132(FormatReader):
         if not os.path.exists(os.path.join(output_dir, 'images/')):
             os.makedirs(os.path.join(output_dir, 'images/'))
         images = []
-        with CurrentDir(os.path.join(output_dir, 'images/')):
-            for i in range(0, self.header_record.num_image_pages):
+        with CurrentDir(os.path.join(output_dir, 'images/')) as cwd:
+            for i in range(self.header_record.num_image_pages):
                 name, img = self.get_image(self.header_record.image_data_offset + i)
-                images.append(name)
-                with open(name, 'wb') as imgf:
-                    self.log.debug('Writing image %s to images/' % name)
-                    imgf.write(img)
+                if dest := self.image_dest(name, cwd):
+                    images.append(name)
+                    with open(dest, 'wb') as imgf:
+                        self.log.debug(f'Writing image {name} to images/')
+                        imgf.write(img)
 
         opf_path = self.create_opf(output_dir, images, toc)
 
@@ -209,8 +219,9 @@ class Reader132(FormatReader):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        with CurrentDir(output_dir):
-            for i in range(0, self.header_record.num_image_pages):
+        with CurrentDir(output_dir) as cwd:
+            for i in range(self.header_record.num_image_pages):
                 name, img = self.get_image(self.header_record.image_data_offset + i)
-                with open(name, 'wb') as imgf:
-                    imgf.write(img)
+                if dest := self.image_dest(name, cwd):
+                    with open(dest, 'wb') as imgf:
+                        imgf.write(img)

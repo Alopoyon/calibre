@@ -4,7 +4,7 @@ __docformat__ = 'restructuredtext en'
 
 import os
 import struct
-import zlib
+from compression import zlib
 
 from calibre import CurrentDir
 from calibre.ebooks.metadata.opf2 import OPFCreator
@@ -43,7 +43,7 @@ class Reader:
     def verify_file(self):
         self.stream.seek(0)
         if self.stream.read(14) != HEADER:
-            raise RocketBookError('Could not read file: %s. Does not contain a valid RocketBook Header.' % self.stream.name)
+            raise RocketBookError(f'Could not read file: {self.stream.name}. Does not contain a valid RocketBook Header.')
 
         self.stream.seek(28)
         size = self.read_i32()
@@ -67,6 +67,15 @@ class Reader:
 
         return toc
 
+    def get_safe_path(self, output_dir, name):
+        base = os.path.abspath(output_dir)
+        if not base.endswith(os.sep):
+            base += os.sep
+        ans = os.path.abspath(os.path.join(base, name))
+        if os.path.commonprefix([ans, base]) != base:
+            ans = ''
+        return ans
+
     def get_text(self, toc_item, output_dir):
         if toc_item.flags in (1, 2):
             return
@@ -87,8 +96,9 @@ class Reader:
         else:
             output += self.stream.read(toc_item.size).decode('cp1252' if self.encoding is None else self.encoding, 'replace')
 
-        with open(os.path.join(output_dir, toc_item.name.decode('utf-8')), 'wb') as html:
-            html.write(output.replace('<TITLE>', '<TITLE> ').encode('utf-8'))
+        if path := self.get_safe_path(output_dir, toc_item.name.decode('utf-8')):
+            with open(path, 'wb') as html:
+                html.write(output.replace('<TITLE>', '<TITLE> ').encode('utf-8'))
 
     def get_image(self, toc_item, output_dir):
         if toc_item.flags != 0:
@@ -97,8 +107,9 @@ class Reader:
         self.stream.seek(toc_item.offset)
         data = self.stream.read(toc_item.size)
 
-        with open(os.path.join(output_dir, toc_item.name.decode('utf-8')), 'wb') as img:
-            img.write(data)
+        if path := self.get_safe_path(output_dir, toc_item.name.decode('utf-8')):
+            with open(path, 'wb') as img:
+                img.write(data)
 
     def extract_content(self, output_dir):
         self.log.debug('Extracting content from file...')
@@ -108,11 +119,11 @@ class Reader:
         for item in self.toc:
             iname = as_unicode(item.name)
             if iname.lower().endswith('html'):
-                self.log.debug('HTML item %s found...' % iname)
+                self.log.debug(f'HTML item {iname} found...')
                 html.append(iname)
                 self.get_text(item, output_dir)
             if iname.lower().endswith('png'):
-                self.log.debug('PNG item %s found...' % iname)
+                self.log.debug(f'PNG item {iname} found...')
                 images.append(iname)
                 self.get_image(item, output_dir)
 

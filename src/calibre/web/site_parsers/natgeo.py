@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 import json
 from pprint import pprint
@@ -106,6 +105,7 @@ def parse_body(x):
             if isinstance(y, dict):
                 yield from parse_body(y)
 
+
 def parse_bdy(item):
     c = item['cntnt']
     if item.get('type') == 'inline':
@@ -124,12 +124,12 @@ def parse_bdy(item):
         elif c.get('cmsType') == 'editorsNote':
             if 'note' in c:
                 yield '<blockquote>' + c['note'] + '</blockquote>'
+    elif c['mrkup'].strip().startswith('<'):
+        yield c['mrkup']
     else:
-        if c['mrkup'].strip().startswith('<'):
-            yield c['mrkup']
-        else:
-            yield '<{tag}>{markup}</{tag}>'.format(
-                tag=item['type'], markup=c['mrkup'])
+        yield '<{tag}>{markup}</{tag}>'.format(
+            tag=item['type'], markup=c['mrkup'])
+
 
 def parse_article(edg):
     sc = edg['schma']

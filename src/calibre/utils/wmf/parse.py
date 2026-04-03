@@ -12,7 +12,6 @@ from calibre.utils.wmf import create_bmp_from_dib, to_png
 
 
 class WMFHeader:
-
     '''
     For header documentation, see
     http://www.skynet.ie/~caolan/publink/libwmf/libwmf/doc/ora-wmf.html
@@ -205,7 +204,7 @@ class WMF:
         self.bitmaps.append(bmp)
 
     def to_png(self):
-        bmps = list(sorted(self.bitmaps, key=lambda x: len(x)))
+        bmps = list(sorted(self.bitmaps, key=len))
         bmp = bmps[-1]
         return to_png(bmp)
 

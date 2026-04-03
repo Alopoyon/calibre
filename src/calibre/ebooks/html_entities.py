@@ -2153,7 +2153,7 @@ def entity_to_unicode_in_python(match, exceptions=(), encoding='cp1252', result_
                 num = int(ent[2:], 16)
             else:
                 num = int(ent[1:])
-        except:
+        except Exception:
             return '&'+ent+';'
         if encoding is None or num > 255:
             return check(my_unichr(num))
@@ -2166,7 +2166,7 @@ def entity_to_unicode_in_python(match, exceptions=(), encoding='cp1252', result_
         return check(html5_entities[ent])
     except KeyError:
         pass
-    from polyglot.html_entities import name2codepoint
+    from html.entities import name2codepoint
     try:
         return check(my_unichr(name2codepoint[ent]))
     except KeyError:
@@ -2194,8 +2194,8 @@ def find_tests():
             t('a&amp;b&lt;c', 'a&b<c')
             t('a&acE;b', 'a∾̳b')
             t('a&#1234;b', 'aӒb')
-            t('a&#X1234;b', 'a\u1234b')
-            t('a&#x1034fA;b', 'a\U001034fAb')
+            t('a&#X1234;b', 'aሴb')
+            t('a&#x1034fA;b', 'a\U001034FAb')
             t('a&#0;b&#x000;c', 'abc')
             x('&amp;&lt;&gt;&apos;&quot;', '&amp;&lt;&gt;&apos;&quot;')
 

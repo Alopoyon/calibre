@@ -14,6 +14,7 @@ class ResultsDelegate(QStyledItemDelegate):  # {{{
 
     add_ellipsis = True
     emphasize_text = True
+    has_icons = False
 
     def result_data(self, result):
         if not hasattr(result, 'is_hidden'):
@@ -40,7 +41,7 @@ class ResultsDelegate(QStyledItemDelegate):  # {{{
             else:
                 emphasis_font = font
             flags = Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextSingleLine | Qt.TextFlag.TextIncludeTrailingSpaces
-            rect = option.rect.adjusted(option.decorationSize.width() + 4 if is_hidden else 0, 0, 0, 0)
+            rect = option.rect.adjusted(option.decorationSize.width() + (6 if self.has_icons else 4) if self.has_icons or is_hidden else 0, 0, 0, 0)
             painter.setClipRect(rect)
             before = re.sub(r'\s+', ' ', result_before)
             if show_leading_dot:
@@ -115,6 +116,7 @@ class SearchBox(HistoryComboBox):  # {{{
 
     def __init__(self, parent=None):
         HistoryComboBox.__init__(self, parent, strip_completion_entries=False)
+        self.suppress_history = False
         self.lineEdit().setPlaceholderText(_('Search'))
         self.lineEdit().setClearButtonEnabled(True)
         ac = self.lineEdit().findChild(QAction, QT_HIDDEN_CLEAR_ACTION)
@@ -122,6 +124,9 @@ class SearchBox(HistoryComboBox):  # {{{
             ac.triggered.connect(self.cleared)
 
     def save_history(self):
+        if self.suppress_history:
+            self.suppress_history = False
+            return
         ret = HistoryComboBox.save_history(self)
         self.history_saved.emit(self.text(), self.history)
         return ret

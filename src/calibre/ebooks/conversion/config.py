@@ -281,6 +281,12 @@ OPTIONS = {
             'no_svg_cover', 'epub_inline_toc', 'epub_toc_at_end', 'toc_title',
             'preserve_cover_aspect_ratio', 'epub_flatten', 'epub_version', 'epub_max_image_size',),
 
+        'kepub': (
+            'dont_split_on_page_breaks', 'flow_size', 'kepub_max_image_size', 'kepub_prefer_justification',
+            'kepub_affect_hyphenation', 'kepub_disable_hyphenation', 'kepub_hyphenation_min_chars',
+            'kepub_hyphenation_min_chars_before', 'kepub_hyphenation_min_chars_after', 'kepub_hyphenation_limit_lines',
+        ),
+
         'fb2': ('sectionize', 'fb2_genre'),
 
         'htmlz': ('htmlz_css_type', 'htmlz_class_style', 'htmlz_title_filename'),
@@ -318,7 +324,7 @@ OPTIONS = {
             'snb_hide_chapter_name','snb_full_screen'),
 
         'txt': (
-            'newline', 'max_line_length', 'force_max_line_length',
+            'newline', 'max_line_length', 'force_max_line_length', 'use_alt_text_for_images',
             'inline_toc', 'txt_output_formatting', 'keep_links', 'keep_image_references',
             'keep_color', 'txt_output_encoding'),
     },

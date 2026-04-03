@@ -267,10 +267,12 @@ def highlight_action(uuid, which):
 def generic_action(which, data):
     if which is 'set-notes-in-highlight':
         view.set_notes_for_highlight(data.uuid, data.notes or '')
-    if which is 'show-status-message':
+    elif which is 'show-status-message':
         view.show_status_message(data.text)
-    if which is 'remove-recently-opened':
+    elif which is 'remove-recently-opened':
         remove_recently_opened(data.path)
+    elif which is 'add-notes-or-create-highlight':
+        view.add_notes_or_create_highlight(data.notes, data.style)
 
 
 @from_python
@@ -281,6 +283,14 @@ def tts_event(which, data):
 @from_python
 def show_home_page():
     view.overlay.open_book(False)
+
+
+@from_python
+def redraw_tts_bar(pos):
+    sd = get_session_data()
+    sd.set('tts_bar_position', pos)
+    if view:
+        view.read_aloud.build_bar()
 
 
 @from_python
@@ -418,6 +428,8 @@ if window is window.top:
         to_python.toggle_inspector()
     ui_operations.content_file_changed = def(name):
         to_python.content_file_changed(name)
+    ui_operations.update_last_read_position = def(cfi, pos_frac):
+        to_python.update_last_read_position(cfi, pos_frac)
     ui_operations.show_search = def(text, trigger):
         to_python.show_search(text, v'!!trigger')
     ui_operations.find_next = def(previous):
@@ -503,7 +515,8 @@ if window is window.top:
         to_python.on_iframe_ready()
     ui_operations.update_reading_rates = def(rates):
         to_python.update_reading_rates(rates)
-
+    ui_operations.reset_reading_rates = def():
+        to_python.reset_reading_rates()
     document.body.appendChild(E.div(id='view'))
     window.onerror = onerror
     create_modal_container()

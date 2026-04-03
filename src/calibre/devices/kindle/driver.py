@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+from typing import NamedTuple
 
 from calibre import fsync, prints, strftime
 from calibre.constants import DEBUG, filesystem_encoding
@@ -82,7 +83,7 @@ def get_files_in(path):
 class KINDLE(USBMS):
 
     name           = 'Kindle Device Interface'
-    gui_name       = 'Amazon Kindle'
+    gui_name       = 'Amazon Kindle Keyboard'
     icon           = 'devices/kindle.png'
     description    = _('Communicate with the Kindle e-book reader.')
     author         = 'John Schember'
@@ -245,7 +246,7 @@ class KINDLE(USBMS):
         if mc_path:
             timestamp = utcfromtimestamp(os.path.getmtime(mc_path))
             bookmarked_books['clippings'] = self.UserAnnotation(type='kindle_clippings',
-                                              value=dict(path=mc_path, timestamp=timestamp))
+                                              value={'path': mc_path, 'timestamp': timestamp})
 
         # This returns as job.result in gui2.ui.annotations_fetched(self,job)
         return bookmarked_books
@@ -264,12 +265,12 @@ class KINDLE(USBMS):
 
         # Add the last-read location
         if bookmark.book_format == 'pdf':
-            markup = _("%(time)s<br />Last page read: %(loc)d (%(pr)d%%)") % dict(
+            markup = _('%(time)s<br />Last page read: %(loc)d (%(pr)d%%)') % dict(
                     time=strftime('%x', timestamp.timetuple()),
                     loc=last_read_location,
                     pr=percent_read)
         else:
-            markup = _("%(time)s<br />Last page read: Location %(loc)d (%(pr)d%%)") % dict(
+            markup = _('%(time)s<br />Last page read: Location %(loc)d (%(pr)d%%)') % dict(
                     time=strftime('%x', timestamp.timetuple()),
                     loc=last_read_location,
                     pr=percent_read)
@@ -294,25 +295,24 @@ class KINDLE(USBMS):
                                 typ=user_notes[location]['type'],
                                 text=(user_notes[location]['text'] if
                                       user_notes[location]['type'] == 'Note' else
-                                      '<i>%s</i>' % user_notes[location]['text'])))
+                                      '<i>{}</i>'.format(user_notes[location]['text']))))
+                elif bookmark.book_format == 'pdf':
+                    annotations.append(
+                            _('<b>Page %(dl)d &bull; %(typ)s</b><br />') % dict(
+                                dl=user_notes[location]['displayed_location'],
+                                typ=user_notes[location]['type']))
                 else:
-                    if bookmark.book_format == 'pdf':
-                        annotations.append(
-                                _('<b>Page %(dl)d &bull; %(typ)s</b><br />') % dict(
-                                    dl=user_notes[location]['displayed_location'],
-                                    typ=user_notes[location]['type']))
-                    else:
-                        annotations.append(
-                                _('<b>Location %(dl)d &bull; %(typ)s</b><br />') % dict(
-                                    dl=user_notes[location]['displayed_location'],
-                                    typ=user_notes[location]['type']))
+                    annotations.append(
+                            _('<b>Location %(dl)d &bull; %(typ)s</b><br />') % dict(
+                                dl=user_notes[location]['displayed_location'],
+                                typ=user_notes[location]['type']))
 
             for annotation in annotations:
                 annot = BeautifulSoup('<span>' + annotation + '</span>').find('span')
                 divTag.insert(dtc, annot)
                 dtc += 1
 
-        ka_soup.insert(0,divTag)
+        ka_soup.insert(0, divTag)
         return ka_soup
 
     def add_annotation_to_library(self, db, db_id, annotation):
@@ -351,7 +351,7 @@ class KINDLE(USBMS):
                                             bm.value.path, index_is_id=True)
         elif bm.type == 'kindle_clippings':
             # Find 'My Clippings' author=Kindle in database, or add
-            last_update = 'Last modified %s' % strftime('%x %X',bm.value['timestamp'].timetuple())
+            last_update = 'Last modified {}'.format(strftime('%x %X',bm.value['timestamp'].timetuple()))
             mc_id = list(db.data.search_getting_ids('title:"My Clippings"', '', sort_results=False))
             if mc_id:
                 db.add_format_with_hooks(mc_id[0], 'TXT', bm.value['path'],
@@ -366,9 +366,22 @@ class KINDLE(USBMS):
                 db.add_books([bm.value['path']], ['txt'], [mi])
 
 
+class APNXOpts(NamedTuple):
+    send_apnx: bool = True
+    apnx_method: str = 'fast'
+    custom_col_name: str = ''
+    method_col_name: str = ''
+    overwrite: bool = True
+
+
+def get_apnx_opts() -> APNXOpts:
+    return APNXOpts(*KINDLE2.settings().extra_customization)
+
+
 class KINDLE2(KINDLE):
 
     name           = 'Kindle 2/3/4/Touch/PaperWhite/Voyage Device Interface'
+    gui_name = 'Amazon Kindle'
     description    = _('Communicate with the Kindle 2/3/4/Touch/Paperwhite/Voyage e-book reader.')
 
     FORMATS     = ['azw', 'mobi', 'azw3', 'prc', 'azw1', 'tpz', 'azw4', 'kfx', 'pobi', 'pdf', 'txt']
@@ -462,7 +475,7 @@ class KINDLE2(KINDLE):
         if os.access(collections, os.R_OK):
             try:
                 self.kindle_update_booklist(bl, collections)
-            except:
+            except Exception:
                 import traceback
                 traceback.print_exc()
         return bl
@@ -512,7 +525,7 @@ class KINDLE2(KINDLE):
         # Upload the cover thumbnail
         try:
             self.upload_kindle_thumbnail(metadata, filepath)
-        except:
+        except Exception:
             import traceback
             traceback.print_exc()
         # Upload the apnx file
@@ -610,7 +623,7 @@ class KINDLE2(KINDLE):
 
         # Create the sidecar folder if necessary
         if (self.sidecar_apnx):
-            path = os.path.join(os.path.dirname(filepath), filename+".sdr")
+            path = os.path.join(os.path.dirname(filepath), filename+'.sdr')
 
             if not os.path.exists(path):
                 os.makedirs(path)
@@ -620,10 +633,10 @@ class KINDLE2(KINDLE):
         if cust_col_name:
             try:
                 custom_page_count = int(metadata.get(cust_col_name, 0))
-            except:
+            except Exception:
                 pass
 
-        apnx_path = '%s.apnx' % os.path.join(path, filename)
+        apnx_path = f'{os.path.join(path, filename)}.apnx'
         apnx_builder = APNXBuilder()
         # Check to see if there is an existing apnx file on Kindle we should keep.
         if opts.extra_customization[self.OPT_APNX_OVERWRITE] or not os.path.exists(apnx_path):
@@ -636,11 +649,11 @@ class KINDLE2(KINDLE):
                         if temp in self.EXTRA_CUSTOMIZATION_CHOICES[self.OPT_APNX_METHOD]:
                             method = temp
                         else:
-                            print("Invalid method choice for this book (%r), ignoring." % temp)
-                    except:
+                            print(f'Invalid method choice for this book ({temp!r}), ignoring.')
+                    except Exception:
                         print('Could not retrieve override method choice, using default.')
                 apnx_builder.write_apnx(filepath, apnx_path, method=method, page_count=custom_page_count)
-            except:
+            except Exception:
                 print('Failed to generate APNX')
                 import traceback
                 traceback.print_exc()
@@ -649,6 +662,7 @@ class KINDLE2(KINDLE):
 class KINDLE_DX(KINDLE2):
 
     name           = 'Kindle DX Device Interface'
+    gui_name       = 'Amazon Kindle DX'
     description    = _('Communicate with the Kindle DX e-book reader.')
 
     FORMATS = ['azw', 'mobi', 'prc', 'azw1', 'tpz', 'azw4', 'pobi', 'pdf', 'txt']
@@ -666,7 +680,7 @@ class KINDLE_FIRE(KINDLE2):
 
     name = 'Kindle Fire Device Interface'
     description = _('Communicate with the Kindle Fire')
-    gui_name = 'Fire'
+    gui_name = 'Amazon Kindle Fire'
     FORMATS = ['azw3', 'azw', 'mobi', 'prc', 'azw1', 'tpz', 'azw4', 'kfx', 'pobi', 'pdf', 'txt']
 
     PRODUCT_ID = [0x0006]

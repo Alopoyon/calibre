@@ -8,8 +8,8 @@ import sys
 import unittest
 from contextlib import contextmanager
 
-import calibre.utils.icu as icu
-from polyglot.builtins import cmp, iteritems
+from calibre.utils import icu
+from polyglot.builtins import cmp
 
 
 @contextmanager
@@ -35,7 +35,7 @@ class TestICU(unittest.TestCase):
         german = '''Sonntag Montag Dienstag Januar Februar März Fuße Fluße Flusse flusse fluße flüße flüsse'''.split()
         german_good = '''Dienstag Februar flusse Flusse fluße Fluße flüsse flüße Fuße Januar März Montag Sonntag'''.split()
         french = '''dimanche lundi mardi janvier février mars déjà Meme deja même dejà bpef bœg Boef Mémé bœf boef bnef pêche pèché pêché pêche pêché'''.split()
-        french_good = '''bnef boef Boef bœf bœg bpef deja dejà déjà dimanche février janvier lundi mardi mars Meme Mémé même pèché pêche pêche pêché pêché'''.split()  # noqa
+        french_good = '''bnef boef Boef bœf bœg bpef deja dejà déjà dimanche février janvier lundi mardi mars Meme Mémé même pèché pêche pêche pêché pêché'''.split()  # noqa: E501
 
         # Test corner cases
         sort_key = icu.sort_key
@@ -66,7 +66,7 @@ class TestICU(unittest.TestCase):
             with make_collation_func('scmp', 'es', maker=icu.make_two_arg_func) as scmp:
                 self.assertNotEqual(0, scmp('pena', 'peña'))
 
-        for k, v in iteritems({'pèché': 'peche', 'flüße':'Flusse', 'Štepánek':'ŠtepaneK'}):
+        for k, v in {'pèché': 'peche', 'flüße':'Flusse', 'Štepánek':'ŠtepaneK'}.items():
             self.ae(0, icu.primary_strcmp(k, v))
 
         # Test different types of collation
@@ -85,7 +85,7 @@ class TestICU(unittest.TestCase):
         for x in ('', None, False, 1):
             self.ae(x, icu.capitalize(x))
 
-        for x in ('a', 'Alice\'s code', 'macdonald\'s machIne', '02 the wars'):
+        for x in ('a', "Alice's code", "macdonald's machIne", '02 the wars'):
             self.ae(icu.upper(x), x.upper())
             self.ae(icu.lower(x), x.lower())
             # ICU's title case algorithm is different from ours, when there are
@@ -100,13 +100,25 @@ class TestICU(unittest.TestCase):
         self.ae((1, 1), icu.find('\U0001f431', 'x\U0001f431x'))
         self.ae((1, 1), icu.find('y', '\U0001f431y'))
         self.ae((0, 4), icu.primary_find('pena', 'peña'))
-        for k, v in iteritems({'pèché': 'peche', 'flüße':'Flusse', 'Štepánek':'ŠtepaneK'}):
+        for k, v in {'pèché': 'peche', 'flüße':'Flusse', 'Štepánek':'ŠtepaneK'}.items():
             self.ae((1, len(k)), icu.primary_find(v, ' ' + k), f'Failed to find {v} in {k}')
         self.assertTrue(icu.startswith(b'abc', b'ab'))
         self.assertTrue(icu.startswith('abc', 'abc'))
         self.assertFalse(icu.startswith('xyz', 'a'))
         self.assertTrue(icu.startswith('xxx', ''))
         self.assertTrue(icu.primary_startswith('pena', 'peña'))
+        # test startswith with codepoint offset
+        c = icu.collator()
+        self.assertTrue(c.startswith('abcdef', 'cd', 2))
+        self.assertFalse(c.startswith('abcdef', 'cd', 3))
+        self.assertTrue(c.startswith('abcdef', '', 3))
+        self.assertFalse(c.startswith('abcdef', 'ab', 10))
+        self.assertTrue(c.startswith('abc', 'a', 0))
+        self.assertTrue(c.startswith('abc', '', 3))    # offset at end of string, empty prefix matches
+        self.assertFalse(c.startswith('abc', 'x', 3))  # offset at end of string, non-empty prefix fails
+        # offset counts codepoints, so emoji (2 UTF-16 units) counts as 1
+        self.assertTrue(c.startswith('x\U0001f431yz', 'y', 2))
+        self.assertFalse(c.startswith('x\U0001f431yz', 'y', 1))
         self.assertTrue(icu.contains('\U0001f431', '\U0001f431'))
         self.assertTrue(icu.contains('something', 'some other something else'))
         self.assertTrue(icu.contains('', 'a'))
@@ -114,9 +126,9 @@ class TestICU(unittest.TestCase):
         self.assertFalse(icu.contains('xxx', 'xx'))
         self.assertTrue(icu.primary_contains('pena', 'peña'))
         x = icu.primary_collator()
-        self.ae(x.get_attribute(icu._icu.UCOL_STRENGTH), icu._icu.UCOL_PRIMARY),
+        self.ae(x.get_attribute(icu._icu.UCOL_STRENGTH), icu._icu.UCOL_PRIMARY)
         self.ae((0, 4), icu.primary_no_punc_find('pena"', 'peña'))
-        self.ae((0, 13), icu.primary_no_punc_find("typographers", 'typographer’s'))
+        self.ae((0, 13), icu.primary_no_punc_find('typographers', 'typographer’s'))
         self.ae((0, 7), icu.primary_no_punc_find('abcd', 'a\u00adb\u200cc\u200dd'))
         self.ae((0, 5), icu.primary_no_punc_find('abcd', 'ab cd'))
         # test find all
@@ -205,14 +217,31 @@ class TestICU(unittest.TestCase):
         from calibre.spell.break_iterator import count_words, index_of, split_into_words_and_positions
         from calibre.spell.break_iterator import split_into_words as split
         for q in ('one two three', ' one two three', 'one\ntwo  three ', ):
-            self.ae(split(str(q)), ['one', 'two', 'three'], 'Failed to split: %r' % q)
-        self.ae(split('I I\'m'), ['I', "I'm"])
+            self.ae(split(str(q)), ['one', 'two', 'three'], f'Failed to split: {q!r}')
+        self.ae(split("I I'm"), ['I', "I'm"])
         self.ae(split('out-of-the-box'), ['out-of-the-box'])
         self.ae(split('-one two-'), ['-one', 'two-'])
         self.ae(split('-one a-b-c-d e'), ['-one', 'a-b-c-d', 'e'])
         self.ae(split('-one -a-b-c-d- e'), ['-one', '-a-b-c-d-', 'e'])
         self.ae(split_into_words_and_positions('one \U0001f431 three'), [(0, 3), (6, 5)])
         self.ae(count_words('a b c d e f'), 6)
+        # Test iter_breaks() and iter_positions()
+        from calibre_extensions import icu as _icu
+        it = _icu.BreakIterator(_icu.UBRK_WORD, 'en')
+        it.set_text('one two three')
+        self.ae(list(it.iter_breaks()), [(0, 3), (4, 3), (8, 5)])
+        it.set_text('one two three')
+        self.ae(list(it.iter_positions()), [0, 4, 8])
+        # Test with hyphenated words
+        it.set_text('out-of-the-box')
+        self.ae(list(it.iter_breaks()), [(0, 14)])
+        it.set_text('out-of-the-box')
+        self.ae(list(it.iter_positions()), [0])
+        # Test with surrogate pairs (emoji)
+        it.set_text('one \U0001f431 three')
+        self.ae(list(it.iter_breaks()), [(0, 3), (6, 5)])
+        it.set_text('one \U0001f431 three')
+        self.ae(list(it.iter_positions()), [0, 6])
         for needle, haystack, pos in (
                 ('word', 'a word b', 2),
                 ('word', 'a word', 2),
@@ -245,7 +274,80 @@ class TestICU(unittest.TestCase):
                 ('a-b-c-', 'a-b-c-d a-b-c- d', 8),
         ):
             fpos = index_of(needle, haystack)
-            self.ae(pos, fpos, 'Failed to find index of %r in %r (%d != %d)' % (needle, haystack, pos, fpos))
+            self.ae(pos, fpos, f'Failed to find index of {needle!r} in {haystack!r} ({pos} != {fpos})')
+
+        # Test extra word break characters
+        # Use 'X' (a letter) as extra break char: ICU treats "fooXbar" as one word,
+        # but with extra 'X' it is split into "foo" and "bar".
+        it_x = _icu.BreakIterator(_icu.UBRK_WORD, 'en', 'X')
+        it_x.set_text('fooXbar baz')
+        self.ae(list(it_x.iter_breaks()), [(0, 3), (4, 3), (8, 3)])
+        # count_words and split2 also respect extra break chars
+        it_x.set_text('aXbXc')
+        self.ae(it_x.count_words(), 3)
+        self.ae(it_x.split2(), [(0, 1), (2, 1), (4, 1)])
+        # Adjacent extra break chars: empty segments between them are skipped
+        it_x.set_text('aXXb')
+        self.ae(list(it_x.iter_breaks()), [(0, 1), (3, 1)])
+        # Multiple extra break chars
+        it_xy = _icu.BreakIterator(_icu.UBRK_WORD, 'en', 'XY')
+        it_xy.set_text('aXbYc d')
+        self.ae(list(it_xy.iter_breaks()), [(0, 1), (2, 1), (4, 1), (6, 1)])
+        # Default (no extra chars) treats "fooXbar" as a single word
+        it_default = _icu.BreakIterator(_icu.UBRK_WORD, 'en')
+        it_default.set_text('fooXbar')
+        self.ae(list(it_default.iter_breaks()), [(0, 7)])
+        # None extra_chars is identical to the default
+        it_none = _icu.BreakIterator(_icu.UBRK_WORD, 'en', None)
+        it_none.set_text('fooXbar')
+        self.ae(list(it_none.iter_breaks()), [(0, 7)])
+        # Surrogate-pair extra break char: emoji is 2 UTF-16 units but 1 Python codepoint;
+        # "hello" is at Python string position 0 (size 5), "world" at position 6 (size 5).
+        it_cat = _icu.BreakIterator(_icu.UBRK_WORD, 'en', '\U0001f431')
+        it_cat.set_text('hello\U0001f431world')
+        self.ae(list(it_cat.iter_breaks()), [(0, 5), (6, 5)])
+        # Hyphen as extra break char disables hyphen-joining
+        it_hyp = _icu.BreakIterator(_icu.UBRK_WORD, 'en', '-')
+        it_hyp.set_text('out-of-the-box')
+        self.ae(list(it_hyp.iter_breaks()), [(0, 3), (4, 2), (7, 3), (11, 3)])
+        # Without the flag, hyphens join words
+        it_no_hyp = _icu.BreakIterator(_icu.UBRK_WORD, 'en')
+        it_no_hyp.set_text('out-of-the-box')
+        self.ae(list(it_no_hyp.iter_breaks()), [(0, 14)])
+        it_comp = _icu.BreakIterator(_icu.UBRK_WORD, 'en', '-.')
+        it_comp.set_text('some-thing.else wise')
+        self.ae(list(it_comp.iter_breaks()), [(0, 4), (5, 5), (11, 4), (16, 4)])
+
+    def test_word_prefix_find(self):
+        ' Test the C implementation of word_prefix_find '
+        from calibre_extensions import icu as _icu
+        c = icu.primary_collator()
+        it = _icu.BreakIterator(_icu.UBRK_WORD, 'en')
+        wpf = _icu.word_prefix_find
+        # Basic prefix matches
+        self.ae(wpf(c, it, 'hello world', 'wo'), 6)
+        self.ae(wpf(c, it, 'hello world', 'he'), 0)
+        self.ae(wpf(c, it, 'hello world', 'world'), 6)
+        self.ae(wpf(c, it, 'hello world', 'hello'), 0)
+        self.ae(wpf(c, it, 'masi asim', 'asi'), 5)
+        self.ae(wpf(c, it, 'Asimov', 'asi'), 0)
+        # No match returns -1
+        self.ae(wpf(c, it, 'hello world', 'xyz'), -1)
+        # Case-insensitive match with primary collator
+        self.ae(wpf(c, it, 'Hello World', 'wo'), 6)
+        self.ae(wpf(c, it, 'Hello World', 'he'), 0)
+        # Accents ignored with primary collator
+        self.ae(wpf(c, it, 'peña mundo', 'pen'), 0)
+        # Empty prefix matches first word
+        self.ae(wpf(c, it, 'hello world', ''), 0)
+        # Empty string returns -1
+        self.ae(wpf(c, it, '', 'x'), -1)
+        self.ae(wpf(c, it, '', ''), -1)
+        # Surrogate pairs: emoji counts as 1 codepoint
+        self.ae(wpf(c, it, '\U0001f431 world', 'wo'), 2)
+        # Multiple calls reuse the iterator
+        self.ae(wpf(c, it, 'one two three', 'tw'), 4)
+        self.ae(wpf(c, it, 'one two three', 'th'), 8)
 
     def test_remove_accents(self):
         for func in (icu.remove_accents_icu, icu.remove_accents_regex):

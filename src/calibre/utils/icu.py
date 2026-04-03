@@ -35,20 +35,26 @@ def is_ascii(name):
 try:
     if is_ascii(sys.getdefaultencoding()):
         _icu.set_default_encoding(b'utf-8')
-except:
+except Exception:
     import traceback
     traceback.print_exc()
 
 try:
     if is_ascii(sys.getfilesystemencoding()):
         _icu.set_filesystem_encoding(b'utf-8')
-except:
+except Exception:
     import traceback
     traceback.print_exc()
 del is_ascii
 
 
-thread_local_collator_cache = threading.local()
+class ThreadLocalCollatorCache(threading.local):
+
+    def __init__(self):
+        self.cache = {}
+
+
+thread_local_collator_cache = ThreadLocalCollatorCache()
 
 
 def collator(strength=None, numeric=None, ignore_alternate_chars=None, upper_first=None):
@@ -60,12 +66,7 @@ def collator(strength=None, numeric=None, ignore_alternate_chars=None, upper_fir
             from calibre.utils.localization import get_lang
             _locale = get_lang()
     key = strength, numeric, ignore_alternate_chars, upper_first
-    try:
-        ans = thread_local_collator_cache.cache.get(key)
-    except AttributeError:
-        thread_local_collator_cache.cache = {}
-        ans = None
-    if ans is not None:
+    if (ans := thread_local_collator_cache.cache.get(key)) is not None:
         return ans
     if all(x is None for x in key):
         try:
@@ -238,6 +239,15 @@ startswith = make_two_arg_func(collator, 'startswith')
 primary_startswith = make_two_arg_func(primary_collator, 'startswith')
 safe_chr = _icu.chr
 ord_string = _icu.ord_string
+try:
+    word_prefix_find = _icu.word_prefix_find
+except AttributeError:  # people running from source
+    def word_prefix_find(collator, it, x, prefix):
+        it.set_text(x)
+        for pos, size in it.split2():
+            if collator.startswith(x, prefix, pos):
+                return pos
+        return -1
 
 
 def character_name(string):
@@ -277,7 +287,7 @@ def partition_by_first_letter(items, reverse=False, key=lambda x:x):
     # Build a list of 'equal' first letters by noticing changes
     # in ICU's 'ordinal' for the first letter.
     from collections import OrderedDict
-    items = sorted(items, key=lambda x:sort_key(key(x)), reverse=reverse)
+    items = sorted(items, key=lambda x: sort_key(key(x)), reverse=reverse)
     ans = OrderedDict()
     last_c, last_ordnum = ' ', 0
     for item in items:

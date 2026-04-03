@@ -6,7 +6,9 @@ import json
 import time
 from collections import defaultdict
 from functools import partial
+from queue import Empty, Queue
 from threading import Thread
+from urllib.parse import urlparse
 
 from qt.core import (
     QAction,
@@ -47,14 +49,10 @@ from calibre.gui2.palette import dark_color, dark_link_color, dark_text_color
 from calibre.gui2.tweak_book import TOP, actions, current_container, editors, tprefs
 from calibre.gui2.tweak_book.file_list import OpenWithHandler
 from calibre.gui2.viewer.web_view import handle_mathjax_request, send_reply
-from calibre.gui2.webengine import RestartingWebEngineView
 from calibre.gui2.widgets2 import HistoryLineEdit2
 from calibre.utils.ipc.simple_worker import offload_worker
 from calibre.utils.resources import get_path as P
 from calibre.utils.webengine import Bridge, create_script, from_js, insert_scripts, secure_webengine, setup_profile, to_js
-from polyglot.builtins import iteritems
-from polyglot.queue import Empty, Queue
-from polyglot.urllib import urlparse
 
 shutdown = object()
 
@@ -65,8 +63,8 @@ def get_data(name):
         return editors[name].get_raw_data()
     return current_container().raw_data(name)
 
-# Parsing of html to add linenumbers {{{
 
+# Parsing of html to add linenumbers {{{
 
 def parse_html(raw):
     root = parse(raw, decoder=lambda x:x.decode('utf-8'), line_numbers=True, linenumber_attribute='data-lnum')
@@ -78,7 +76,7 @@ def parse_html(raw):
 
 class ParseItem:
 
-    __slots__ = ('name', 'length', 'fingerprint', 'parsing_done', 'parsed_data')
+    __slots__ = ('fingerprint', 'length', 'name', 'parsed_data', 'parsing_done')
 
     def __init__(self, name):
         self.name = name
@@ -87,8 +85,9 @@ class ParseItem:
         self.parsing_done = False
 
     def __repr__(self):
-        return 'ParsedItem(name={!r}, length={!r}, fingerprint={!r}, parsing_done={!r}, parsed_data_is_None={!r})'.format(
-            self.name, self.length, self.fingerprint, self.parsing_done, self.parsed_data is None)
+        return (
+            f'ParsedItem(name={self.name!r}, length={self.length!r}, fingerprint={self.fingerprint!r}, '
+            f'parsing_done={self.parsing_done!r}, parsed_data_is_None={self.parsed_data is None!r})')
 
 
 class ParseWorker(Thread):
@@ -109,7 +108,7 @@ class ParseWorker(Thread):
             # Connect to the worker and send a dummy job to initialize it
             self.worker = offload_worker(priority='low')
             self.worker(mod, func, '<p></p>')
-        except:
+        except Exception:
             import traceback
             traceback.print_exc()
             self.launch_error = traceback.format_exc()
@@ -132,14 +131,14 @@ class ParseWorker(Thread):
             pi, data = request[1:]
             try:
                 res = self.worker(mod, func, data)
-            except:
+            except Exception:
                 import traceback
                 traceback.print_exc()
             else:
                 pi.parsing_done = True
                 parsed_data = res['result']
                 if res['tb']:
-                    prints("Parser error:")
+                    prints('Parser error:')
                     prints(res['tb'])
                 else:
                     pi.parsed_data = parsed_data
@@ -175,8 +174,8 @@ class ParseWorker(Thread):
 parse_worker = ParseWorker()
 # }}}
 
-# Override network access to load data "live" from the editors {{{
 
+# Override network access to load data "live" from the editors {{{
 
 class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
 
@@ -224,7 +223,7 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
 
     def check_for_parse(self):
         remove = []
-        for name, requests in iteritems(self.requests):
+        for name, requests in self.requests.items():
             data = parse_worker.get_data(name)
             if data is not None:
                 if not isinstance(data, bytes):
@@ -237,7 +236,6 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
 
         if self.requests:
             return QTimer.singleShot(10, self.check_for_parse)
-
 
 # }}}
 
@@ -415,10 +413,10 @@ class Inspector(QWidget):
         return QSize(1280, 600)
 
 
-class WebView(RestartingWebEngineView, OpenWithHandler):
+class WebView(QWebEngineView, OpenWithHandler):
 
     def __init__(self, parent=None):
-        RestartingWebEngineView.__init__(self, parent)
+        super().__init__(parent)
         self.inspector = Inspector(self)
         w = self.screen().availableSize().width()
         self._size_hint = QSize(int(w/3), int(w/2))
@@ -427,7 +425,7 @@ class WebView(RestartingWebEngineView, OpenWithHandler):
         self.clear()
         self.setAcceptDrops(False)
         self.dead_renderer_error_shown = False
-        self.render_process_failed.connect(self.render_process_died)
+        self.renderProcessTerminated.connect(self.render_process_died)
 
     def render_process_died(self):
         if self.dead_renderer_error_shown:
@@ -453,7 +451,7 @@ class WebView(RestartingWebEngineView, OpenWithHandler):
 
     def set_url(self, qurl):
         self.update_settings()
-        RestartingWebEngineView.setUrl(self, qurl)
+        super().setUrl(qurl)
 
     def clear(self):
         self.update_settings()
@@ -519,7 +517,6 @@ class Preview(QWidget):
     refresh_starting = pyqtSignal()
     refreshed = pyqtSignal()
     live_css_data = pyqtSignal(object)
-    render_process_restarted = pyqtSignal()
     open_file_with = pyqtSignal(object, object, object)
     edit_file = pyqtSignal(object)
 
@@ -538,7 +535,6 @@ class Preview(QWidget):
         self.view._page.bridge.bridge_ready.connect(self.on_bridge_ready)
         self.view._page.loadFinished.connect(self.load_finished)
         self.view._page.loadStarted.connect(self.load_started)
-        self.view.render_process_restarted.connect(self.render_process_restarted)
         self.pending_go_to_anchor = None
         self.inspector = self.view.inspector
         self.stack.addWidget(self.view)
@@ -579,6 +575,9 @@ class Preview(QWidget):
         ac.triggered.connect(self.refresh)
         self.bar.addAction(ac)
 
+        ac = actions['copy-from-preview']
+        ac.triggered.connect(self.copy_to_clipboard)
+
         actions['preview-dock'].toggled.connect(self.visibility_changed)
 
         self.current_name = None
@@ -599,9 +598,12 @@ class Preview(QWidget):
         self.bar.addSeparator()
         self.bar.addWidget(self.search)
         for d in ('next', 'prev'):
-            ac = actions['find-%s-preview' % d]
+            ac = actions[f'find-{d}-preview']
             ac.triggered.connect(getattr(self, 'find_' + d))
             self.bar.addAction(ac)
+
+    def copy_to_clipboard(self):
+        self.view.triggerPageAction(QWebEnginePage.WebAction.Copy)
 
     def clear_clicked(self):
         self.view._page.findText('')

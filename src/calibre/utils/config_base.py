@@ -11,12 +11,11 @@ import traceback
 from collections import defaultdict
 from contextlib import suppress
 from copy import deepcopy
-from functools import partial
+from functools import lru_cache, partial
 
 from calibre.constants import CONFIG_DIR_MODE, config_dir, filesystem_encoding, get_umask, iswindows, preferred_encoding
 from calibre.utils.localization import _
 from calibre.utils.resources import get_path as P
-from polyglot.builtins import iteritems
 
 plugin_dir = os.path.join(config_dir, 'plugins')
 
@@ -98,7 +97,7 @@ def force_unicode_recursive(obj):
     if isinstance(obj, (list, tuple)):
         return type(obj)(map(force_unicode_recursive, obj))
     if isinstance(obj, dict):
-        return {force_unicode_recursive(k): force_unicode_recursive(v) for k, v in iteritems(obj)}
+        return {force_unicode_recursive(k): force_unicode_recursive(v) for k, v in obj.items()}
     return obj
 
 
@@ -198,7 +197,7 @@ class OptionSet:
 
     def add_group(self, name, description=''):
         if name in self.group_list:
-            raise ValueError('A group by the name %s already exists in this set'%name)
+            raise ValueError(f'A group by the name {name} already exists in this set')
         self.groups[name] = description
         self.group_list.append(name)
         return partial(self.add_opt, group=name)
@@ -250,9 +249,9 @@ class OptionSet:
         pref = Option(name, switches=switches, help=help, type=type, choices=choices,
                  group=group, default=default, action=action, metavar=None)
         if group is not None and group not in self.groups.keys():
-            raise ValueError('Group %s has not been added to this section'%group)
+            raise ValueError(f'Group {group} has not been added to this section')
         if pref in self.preferences:
-            raise ValueError('An option with the name %s already exists in this set.'%name)
+            raise ValueError(f'An option with the name {name} already exists in this set.')
         self.preferences.append(pref)
         self.defaults[name] = default
 
@@ -267,7 +266,7 @@ class OptionSet:
     def option_parser(self, user_defaults=None, usage='', gui_mode=False):
         from calibre.utils.config import OptionParser
         parser = OptionParser(usage, gui_mode=gui_mode)
-        groups = defaultdict(lambda : parser)
+        groups = defaultdict(lambda: parser)
         for group, desc in self.groups.items():
             groups[group] = parser.add_option_group(group.upper(), desc)
 
@@ -378,14 +377,14 @@ def read_data(file_path):
     return retry_on_fail(r)
 
 
-def commit_data(file_path, data):
+def commit_data(file_path, data, permissions=0o666):
     import tempfile
     bdir = os.path.dirname(file_path)
     os.makedirs(bdir, exist_ok=True, mode=CONFIG_DIR_MODE)
     try:
         with tempfile.NamedTemporaryFile(dir=bdir, prefix=os.path.basename(file_path).split('.')[0] + '-atomic-', delete=False) as f:
             if hasattr(os, 'fchmod'):
-                os.fchmod(f.fileno(), 0o666 & ~get_umask())
+                os.fchmod(f.fileno(), permissions & ~get_umask())
             f.write(data)
         retry_on_fail(os.replace, f.name, file_path)
     finally:
@@ -415,7 +414,7 @@ class Config(ConfigInterface):
             try:
                 src = src_bytes.decode('utf-8')
             except ValueError:
-                print("Failed to parse", path)
+                print('Failed to parse', path)
                 traceback.print_exc()
         if not src:
             path = path.rpartition('.')[0]
@@ -435,7 +434,7 @@ class Config(ConfigInterface):
 
     def set(self, name, val):
         if not self.option_set.has_option(name):
-            raise ValueError('The option %s is not defined.'%name)
+            raise ValueError(f'The option {name} is not defined.')
         if not os.path.exists(config_dir):
             make_config_dir()
         src = b''
@@ -468,7 +467,7 @@ class StringConfig(ConfigInterface):
 
     def set(self, name, val):
         if not self.option_set.has_option(name):
-            raise ValueError('The option %s is not defined.'%name)
+            raise ValueError(f'The option {name} is not defined.')
         opts = self.option_set.parse_string(self.src)
         setattr(opts, name, val)
         self.set_src(self.option_set.serialize(opts))
@@ -594,7 +593,7 @@ def create_global_prefs(conf_obj=None):
                    'can cause problems with text that starts with numbers and is '
                    'a little slower.'))
 
-    c.add_opt('migrated', default=False, help='For Internal use. Don\'t modify.')
+    c.add_opt('migrated', default=False, help="For Internal use. Don't modify.")
     return c
 
 
@@ -603,8 +602,8 @@ if prefs['installation_uuid'] is None:
     import uuid
     prefs['installation_uuid'] = str(uuid.uuid4())
 
-# Read tweaks
 
+# Read tweaks
 
 def tweaks_file():
     return os.path.join(config_dir, 'tweaks.json')
@@ -619,7 +618,7 @@ def make_unicode(obj):
     if isinstance(obj, (list, tuple)):
         return list(map(make_unicode, obj))
     if isinstance(obj, dict):
-        return {make_unicode(k): make_unicode(v) for k, v in iteritems(obj)}
+        return {make_unicode(k): make_unicode(v) for k, v in obj.items()}
     return obj
 
 
@@ -627,37 +626,41 @@ def normalize_tweak(val):
     if isinstance(val, (list, tuple)):
         return tuple(map(normalize_tweak, val))
     if isinstance(val, dict):
-        return {k: normalize_tweak(v) for k, v in iteritems(val)}
+        return {k: normalize_tweak(v) for k, v in val.items()}
     return val
+
+
+def parse_python_tweaks(text: str) -> dict[str, object]:
+    import ast
+    ans = {}
+    tree = ast.parse(text, filename='<string>')
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            # Get the value (must be a literal)
+            try:
+                value = ast.literal_eval(node.value)
+            except Exception:
+                # Skip non-literal values
+                continue
+            # Extract target variable names
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    ans[target.id] = value
+    return ans
 
 
 def write_custom_tweaks(tweaks_dict):
     make_config_dir()
     tweaks_dict = make_unicode(tweaks_dict)
     changed_tweaks = {}
-    default_tweaks = exec_tweaks(default_tweaks_raw())
-    for key, cval in iteritems(tweaks_dict):
+    default_tweaks = parse_python_tweaks(default_tweaks_raw())
+    for key, cval in tweaks_dict.items():
         if key in default_tweaks and normalize_tweak(cval) == normalize_tweak(default_tweaks[key]):
             continue
         changed_tweaks[key] = cval
     raw = json_dumps(changed_tweaks)
     with open(tweaks_file(), 'wb') as f:
         f.write(raw)
-
-
-def exec_tweaks(path):
-    if isinstance(path, bytes):
-        raw = path
-        fname = '<string>'
-    else:
-        with open(path, 'rb') as f:
-            raw = f.read()
-            fname = f.name
-    code = compile(raw, fname, 'exec')
-    l = {}
-    g = {'__file__': fname}
-    exec(code, g, l)
-    return l
 
 
 def read_custom_tweaks():
@@ -678,18 +681,20 @@ def read_custom_tweaks():
             return ans
     old_tweaks_file = tf.rpartition('.')[0] + '.py'
     if os.path.exists(old_tweaks_file):
-        ans = exec_tweaks(old_tweaks_file)
+        with open(old_tweaks_file) as f:
+            ans = make_unicode(parse_python_tweaks(old_tweaks_file))
         ans = make_unicode(ans)
         write_custom_tweaks(ans)
     return ans
 
 
+@lru_cache
 def default_tweaks_raw():
-    return P('default_tweaks.py', data=True, allow_user_override=False)
+    return P('default_tweaks.py', data=True, allow_user_override=False).decode()
 
 
 def read_tweaks():
-    default_tweaks = exec_tweaks(default_tweaks_raw())
+    default_tweaks = parse_python_tweaks(default_tweaks_raw())
     try:
         custom_tweaks = read_custom_tweaks()
     except Exception:
@@ -714,7 +719,7 @@ migrate_tweaks_to_prefs()
 
 
 def reset_tweaks_to_default():
-    default_tweaks = exec_tweaks(default_tweaks_raw())
+    default_tweaks = parse_python_tweaks(default_tweaks_raw())
     tweaks.clear()
     tweaks.update(default_tweaks)
 
@@ -730,3 +735,14 @@ class Tweak:
 
     def __exit__(self, *args):
         tweaks[self.name] = self.origval
+
+
+def find_tests():
+    import unittest
+    class TestTweakParsing(unittest.TestCase):
+        def test_tweak_parsing(self):
+            for raw in (default_tweaks_raw(),):
+                expected, g = {}, {}
+                exec(raw, g, expected)
+                self.assertEqual(expected, parse_python_tweaks(raw))
+    return unittest.defaultTestLoader.loadTestsFromTestCase(TestTweakParsing)

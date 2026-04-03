@@ -1,5 +1,8 @@
 #define UNICODE
 #define PY_SSIZE_T_CLEAN
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
 
 #include <Python.h>
 #include <datetime.h>
@@ -28,14 +31,44 @@ typedef unsigned __int8 uint8_t;
 #else
 #include <stdint.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+static PyObject*
+barename(PyObject *self, PyObject *tag) {
+    if (!PyUnicode_Check(tag)) { PyErr_Format(PyExc_TypeError, "%R is not a unicode string", tag); return NULL; }
+    Py_ssize_t pos = PyUnicode_FindChar(tag, '}', 0, PyUnicode_GetLength(tag), -1);
+    switch(pos) {
+        case -2: return NULL;
+        case -1: Py_INCREF(tag); return tag;
+        default: return PyUnicode_Substring(tag, pos + 1, PyUnicode_GetLength(tag));
+    }
+}
+
+static PyObject*
+namespace(PyObject *self, PyObject *tag) {
+    if (!PyUnicode_Check(tag)) { PyErr_Format(PyExc_TypeError, "%R is not a unicode string", tag); return NULL; }
+    Py_ssize_t pos = PyUnicode_FindChar(tag, '}', 0, PyUnicode_GetLength(tag), -1);
+    switch(pos) {
+        case -2: return NULL;
+        case -1: return PyUnicode_FromString("");
+        default: return PyUnicode_Substring(tag, 1, pos);
+    }
+}
+
 
 static PyObject *
-speedup_parse_date(PyObject *self, PyObject *args) {
+speedup_parse_date(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
     const char *raw, *orig, *tz;
     char *end;
     long year, month, day, hour, minute, second, tzh = 0, tzm = 0, sign = 0;
     size_t len;
-    if(!PyArg_ParseTuple(args, "s", &raw)) return NULL;
+    if (nargs != 1) { PyErr_SetString(PyExc_TypeError, "parse_date() takes exactly 1 argument"); return NULL; }
+    raw = PyUnicode_AsUTF8(args[0]);
+    if (!raw) return NULL;
     while ((*raw == ' ' || *raw == '\t' || *raw == '\n' || *raw == '\r' || *raw == '\f' || *raw == '\v') && *raw != 0) raw++;
     len = strlen(raw);
     if (len < 19) Py_RETURN_NONE;
@@ -88,14 +121,16 @@ speedup_parse_date(PyObject *self, PyObject *args) {
 
 
 static PyObject*
-speedup_pdf_float(PyObject *self, PyObject *args) {
+speedup_pdf_float(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
     double f = 0.0, a = 0.0;
     char *buf = "0", *dot;
     void *free_buf = NULL;
     int precision = 6, l = 0;
     PyObject *ret;
 
-    if(!PyArg_ParseTuple(args, "d", &f)) return NULL;
+    if (nargs != 1) { PyErr_SetString(PyExc_TypeError, "pdf_float() takes exactly 1 argument"); return NULL; }
+    f = PyFloat_AsDouble(args[0]);
+    if (f == -1.0 && PyErr_Occurred()) return NULL;
 
     a = fabs(f);
 
@@ -120,9 +155,11 @@ speedup_pdf_float(PyObject *self, PyObject *args) {
 }
 
 static PyObject*
-speedup_detach(PyObject *self, PyObject *args) {
-    char *devnull = NULL;
-    if (!PyArg_ParseTuple(args, "s", &devnull)) return NULL;
+speedup_detach(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
+    const char *devnull = NULL;
+    if (nargs != 1) { PyErr_SetString(PyExc_TypeError, "detach() takes exactly 1 argument"); return NULL; }
+    devnull = PyUnicode_AsUTF8(args[0]);
+    if (!devnull) return NULL;
     if (freopen(devnull, "r", stdin) == NULL) return PyErr_SetFromErrnoWithFilename(PyExc_OSError, devnull);
     if (freopen(devnull, "w", stdout) == NULL) return PyErr_SetFromErrnoWithFilename(PyExc_OSError, devnull);
     if (freopen(devnull, "w", stderr) == NULL)  return PyErr_SetFromErrnoWithFilename(PyExc_OSError, devnull);
@@ -212,14 +249,19 @@ speedup_create_texture(PyObject *self, PyObject *args, PyObject *kw) {
 }
 
 static PyObject*
-speedup_websocket_mask(PyObject *self, PyObject *args) {
+speedup_websocket_mask(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
 	PyObject *data = NULL, *mask = NULL;
 	Py_buffer data_buf = {0}, mask_buf = {0};
 	Py_ssize_t offset = 0, i = 0;
 	char *dbuf = NULL, *mbuf = NULL;
     int ok = 0;
 
-    if(!PyArg_ParseTuple(args, "OO|n", &data, &mask, &offset)) return NULL;
+    if (nargs < 2 || nargs > 3) { PyErr_SetString(PyExc_TypeError, "websocket_mask() takes 2 or 3 arguments"); return NULL; }
+    data = args[0]; mask = args[1];
+    if (nargs > 2) {
+        offset = PyLong_AsSsize_t(args[2]);
+        if (offset == -1 && PyErr_Occurred()) return NULL;
+    }
 
 	if (PyObject_GetBuffer(data, &data_buf, PyBUF_SIMPLE|PyBUF_WRITABLE) != 0) return NULL;
 	if (PyObject_GetBuffer(mask, &mask_buf, PyBUF_SIMPLE) != 0) goto done;
@@ -275,14 +317,25 @@ utf8_decode_(uint32_t* state, uint32_t* codep, uint8_t byte) {
 }
 
 static PyObject*
-utf8_decode(PyObject *self, PyObject *args) {
+utf8_decode(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
 	uint8_t *dbuf = NULL;
 	uint32_t state = UTF8_ACCEPT, codep = 0, *buf = NULL;
 	PyObject *data_obj = NULL, *ans = NULL;
 	Py_buffer pbuf;
 	Py_ssize_t i = 0, pos = 0;
 
-    if(!PyArg_ParseTuple(args, "O|II", &data_obj, &state, &codep)) return NULL;
+    if (nargs < 1 || nargs > 3) { PyErr_SetString(PyExc_TypeError, "utf8_decode() takes 1 to 3 arguments"); return NULL; }
+    data_obj = args[0];
+    if (nargs > 1) {
+        unsigned long val = PyLong_AsUnsignedLong(args[1]);
+        if (val == (unsigned long)-1 && PyErr_Occurred()) return NULL;
+        state = (uint32_t)val;
+    }
+    if (nargs > 2) {
+        unsigned long val = PyLong_AsUnsignedLong(args[2]);
+        if (val == (unsigned long)-1 && PyErr_Occurred()) return NULL;
+        codep = (uint32_t)val;
+    }
 	if (PyObject_GetBuffer(data_obj, &pbuf, PyBUF_SIMPLE) != 0) return NULL;
 	buf = (uint32_t*)PyMem_Malloc(sizeof(uint32_t) * pbuf.len);
 	if (buf == NULL) goto error;
@@ -355,11 +408,13 @@ clean_xml_chars(PyObject *self, PyObject *text) {
 }
 
 static PyObject *
-speedup_iso_8601(PyObject *self, PyObject *args) {
-    char *str = NULL, *c = NULL;
+speedup_iso_8601(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
+    const char *str = NULL, *c = NULL;
     int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, usecond = 0, i = 0, tzhour = 1000, tzminute = 0, tzsign = 0;
 
-    if (!PyArg_ParseTuple(args, "s", &str)) return NULL;
+    if (nargs != 1) { PyErr_SetString(PyExc_TypeError, "parse_iso8601() takes exactly 1 argument"); return NULL; }
+    str = PyUnicode_AsUTF8(args[0]);
+    if (!str) return NULL;
     c = str;
 
 #define RAISE(msg) return PyErr_Format(PyExc_ValueError, "%s is not a valid ISO 8601 datestring: %s", str, msg);
@@ -458,15 +513,17 @@ extern int pthread_setname_np(pthread_t, const char *name);
 
 
 static PyObject*
-set_thread_name(PyObject *self, PyObject *args) {
-	(void)(self); (void)(args);
+set_thread_name(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
+	(void)(self); (void)(args); (void)(nargs);
 #if defined(_MSC_VER) || defined(__HAIKU__)
 	PyErr_SetString(PyExc_RuntimeError, "Setting thread names not supported on this platform");
 	return NULL;
 #else
-	char *name;
+	const char *name;
 	int ret;
-	if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
+	if (nargs != 1) { PyErr_SetString(PyExc_TypeError, "set_thread_name() takes exactly 1 argument"); return NULL; }
+	name = PyUnicode_AsUTF8(args[0]);
+	if (!name) return NULL;
 	while (1) {
 		errno = 0;
 #if defined(__APPLE__)
@@ -515,7 +572,7 @@ count_chars(const char *tag_name, Py_ssize_t tag_len, udata *text, udata *tail) 
         if (tag_len < sizeof(ltagname)) {
             memcpy(ltagname, tag_name, tag_len);
             for (size_t i = 0; i < tag_len; i++) if ('A' <= ltagname[i] && ltagname[i] <= 'Z') ltagname[i] += 32;
-#define EQ(x) (memcmp(ltagname, #x, tag_len) == 0)
+#define EQ(x) (tag_len + 1 == sizeof(#x) && memcmp(ltagname, #x, tag_len) == 0)
             switch(ltagname[0]) {
                 case 's':
                     if (EQ(script) || EQ(style)) is_ignored_tag = 1;
@@ -529,6 +586,9 @@ count_chars(const char *tag_name, Py_ssize_t tag_len, udata *text, udata *tail) 
                     break;
                 case 'i':
                     if (EQ(img)) ans += 1000;
+                    break;
+                case 'v':
+                    if (EQ(video)) ans += 2000;
                     break;
             }
         }
@@ -682,24 +742,95 @@ deepcopy(PyObject *self, PyObject *o) {
     return ans;
 }
 
+
+static PyObject*
+pread_all(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
+    int fd; unsigned long long n, offset = 0;
+    if (nargs < 2 || nargs > 3) { PyErr_SetString(PyExc_TypeError, "pread_all() takes 2 or 3 arguments"); return NULL; }
+    fd = (int)PyLong_AsLong(args[0]);
+    if (fd == -1 && PyErr_Occurred()) return NULL;
+    n = PyLong_AsUnsignedLongLong(args[1]);
+    if (n == (unsigned long long)-1 && PyErr_Occurred()) return NULL;
+    if (nargs > 2) {
+        offset = PyLong_AsUnsignedLongLong(args[2]);
+        if (offset == (unsigned long long)-1 && PyErr_Occurred()) return NULL;
+    }
+#ifdef _WIN32
+    PyObject *msvcrt = PyImport_ImportModule("msvcrt");
+    if (!msvcrt) return NULL;
+    PyObject *get_osfhandle = PyObject_GetAttrString(msvcrt, "get_osfhandle");
+    Py_CLEAR(msvcrt);
+    if (!get_osfhandle) return NULL;
+    PyObject *ret = PyObject_CallFunctionObjArgs(get_osfhandle, args[0], NULL);
+    Py_CLEAR(get_osfhandle);
+    if (!ret) return NULL;
+    HANDLE file = (HANDLE)PyLong_AsUnsignedLongLong(ret);
+    Py_CLEAR(ret);
+#endif
+    PyObject *output = PyBytes_FromStringAndSize(NULL, n);
+    if (!output || !n) return output;
+    size_t pos = 0;
+    char *buf = PyBytes_AS_STRING(output);
+    int saved_errno = 0;
+    Py_BEGIN_ALLOW_THREADS;
+    while (pos < n) {
+#ifdef _WIN32
+        DWORD nr = 0;
+        OVERLAPPED overlapped;
+        memset(&overlapped, 0, sizeof(OVERLAPPED));
+        overlapped.OffsetHigh = (uint32_t)((offset & 0xFFFFFFFF00000000LL) >> 32);
+        overlapped.Offset = (uint32_t)(offset & 0xFFFFFFFFLL);
+        SetLastError(0);
+        BOOL ok = ReadFile(file, buf + pos, n - pos, &nr, &overlapped);
+        if (!ok) {
+            DWORD err = GetLastError();
+            if (err != ERROR_HANDLE_EOF) saved_errno = err;
+            break;
+        }
+#else
+        ssize_t nr = pread(fd, buf + pos, n - pos, offset);
+        if (nr < 0) {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            saved_errno = errno;
+            break;
+        } else if (nr == 0) break;
+#endif
+        pos += nr;
+        offset += nr;
+    }
+    Py_END_ALLOW_THREADS
+    if (saved_errno != 0) {
+        Py_CLEAR(output);
+#ifdef _WIN32
+        PyErr_SetFromWindowsErr(saved_errno);
+#else
+        errno = saved_errno;
+        PyErr_SetFromErrno(PyExc_OSError);
+#endif
+        return NULL;
+    }
+    if (pos < n && _PyBytes_Resize(&output, pos) != 0) return NULL;
+    return output;
+}
+
 static PyMethodDef speedup_methods[] = {
     {"deepcopy", deepcopy, METH_O,
         "deepcopy(object)\n\nFast implementation of deepcopy()"
     },
 
-    {"parse_date", speedup_parse_date, METH_VARARGS,
+    {"parse_date", (PyCFunction)(void(*)(void))speedup_parse_date, METH_FASTCALL,
         "parse_date()\n\nParse ISO dates faster (specialized for dates stored in the calibre db)."
     },
 
-    {"parse_iso8601", speedup_iso_8601, METH_VARARGS,
+    {"parse_iso8601", (PyCFunction)(void(*)(void))speedup_iso_8601, METH_FASTCALL,
         "parse_iso8601(datestring)\n\nParse ISO 8601 dates faster. More spec compliant than parse_date()"
     },
 
-    {"pdf_float", speedup_pdf_float, METH_VARARGS,
+    {"pdf_float", (PyCFunction)(void(*)(void))speedup_pdf_float, METH_FASTCALL,
         "pdf_float()\n\nConvert float to a string representation suitable for PDF"
     },
 
-    {"detach", speedup_detach, METH_VARARGS,
+    {"detach", (PyCFunction)(void(*)(void))speedup_detach, METH_FASTCALL,
         "detach()\n\nRedirect the standard I/O stream to the specified file (usually os.devnull)"
     },
 
@@ -713,11 +844,11 @@ static PyMethodDef speedup_methods[] = {
             " This function returns an image (bytestring) in the PPM format as the texture."
     },
 
-    {"websocket_mask", speedup_websocket_mask, METH_VARARGS,
+    {"websocket_mask", (PyCFunction)(void(*)(void))speedup_websocket_mask, METH_FASTCALL,
         "websocket_mask(data, mask [, offset=0)\n\nXOR the data (bytestring) with the specified (must be 4-byte bytestring) mask"
     },
 
-	{"utf8_decode", utf8_decode, METH_VARARGS,
+	{"utf8_decode", (PyCFunction)(void(*)(void))utf8_decode, METH_FASTCALL,
 		"utf8_decode(data, [, state=0, codep=0)\n\nDecode an UTF-8 bytestring, using a strict UTF-8 decoder, that unlike python does not allow orphaned surrogates. Returns a unicode object and the state."
 	},
 
@@ -725,12 +856,27 @@ static PyMethodDef speedup_methods[] = {
         "clean_xml_chars(unicode_object)\n\nRemove codepoints in unicode_object that are not allowed in XML"
     },
 
-	{"set_thread_name", set_thread_name, METH_VARARGS,
+	{"set_thread_name", (PyCFunction)(void(*)(void))set_thread_name, METH_FASTCALL,
 		"set_thread_name(name)\n\nWrapper for pthread_setname_np"
+	},
+
+	{"pread_all", (PyCFunction)(void(*)(void))pread_all, METH_FASTCALL,
+		"pread_all(fd, n, offset)\n\nRead upto n bytes from the specified fd at offset in a thread safe manner."
+        " If less than n bytes are returned it means there were less than n bytes in the file at offset."
+        " Only works with seekable regular files, not sockets/ttys/etc. Note that on Windows it moves the file pointer"
+        " so cannot be mixed with calls to tell() or ordinary reads."
 	},
 
 	{"get_num_of_significant_chars", get_num_of_significant_chars, METH_O,
 		"get_num_of_significant_chars(elem)\n\nGet the number of chars in specified tag"
+	},
+
+	{"barename", barename, METH_O,
+		"barename(tag)\n\nGet bare tag name without namespace"
+	},
+
+	{"namespace", namespace, METH_O,
+		"namespace(tag)\n\nGet namespace of the tag"
 	},
 
     {NULL, NULL, 0, NULL}

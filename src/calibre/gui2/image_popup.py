@@ -32,6 +32,7 @@ from qt.core import (
 
 from calibre import fit_image
 from calibre.gui2 import NO_URL_FORMATTING, choose_save_file, gprefs, max_available_height
+from calibre.gui2.palette import dark_palette
 
 
 def render_svg(widget, path):
@@ -61,7 +62,7 @@ class Label(QLabel):
     def __init__(self, scrollarea):
         super().__init__(scrollarea)
         scrollarea.zoom_requested.connect(self.zoom_requested)
-        self.setBackgroundRole(QPalette.ColorRole.Text if QApplication.instance().is_dark_theme else QPalette.ColorRole.Base)
+        self.setBackgroundRole(QPalette.ColorRole.NoRole)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setScaledContents(True)
         self.default_cursor = self.cursor()
@@ -133,12 +134,14 @@ class ImageView(QDialog):
         QDialog.__init__(self)
         self.prefs = prefs
         self.current_image_name = ''
+        self.current_image_is_svg = False
         self.maximized_at_last_fullscreen = False
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint)
         self.avail_geom = self.screen().availableGeometry()
         self.current_img = current_img
         self.current_url = current_url
+        self.transformed = False
         self.factor = 1.0
         self.geom_name = geom_name
         self.zoom_in_action = ac = QAction(QIcon.ic('plus.png'), _('Zoom &in'), self)
@@ -162,6 +165,10 @@ class ImageView(QDialog):
         ac.triggered.connect(self.rotate_image)
 
         self.scrollarea = sa = ScrollArea()
+        pal = sa.palette()
+        pal.setColor(QPalette.ColorRole.Dark,
+                     dark_palette().color(QPalette.ColorRole.Base) if QApplication.instance().is_dark_theme else Qt.GlobalColor.darkGray)
+        sa.setPalette(pal)
         sa.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         sa.setBackgroundRole(QPalette.ColorRole.Dark)
         self.label = l = Label(sa)
@@ -223,6 +230,11 @@ class ImageView(QDialog):
         m.addAction(self.zoom_out_action)
         m.addAction(self.copy_action)
         m.addAction(self.rotate_action)
+        ac = QAction(self.fit_image.text())
+        ac.setCheckable(True)
+        ac.setChecked(self.fit_image.isChecked())
+        ac.toggled.connect(self.toggle_fit)
+        m.addAction(ac)
         m.exec(self.mapToGlobal(pos))
 
     def set_to_viewport_size(self):
@@ -275,13 +287,18 @@ class ImageView(QDialog):
         self.adjust_image(0.8)
 
     def save_image(self):
-        filters=[('Images', ['png', 'jpeg', 'jpg'])]
+        is_svg = self.current_image_is_svg and hasattr(self, 'current_url') and self.current_url.isLocalFile()
+        filters=[('Images', ['svg'] if is_svg else ['png', 'jpeg', 'jpg'])]
         f = choose_save_file(self, 'viewer image view save dialog',
                 _('Choose a file to save to'), filters=filters,
                 all_files=False, initial_filename=self.current_image_name or None)
         if f:
-            from calibre.utils.img import save_image
-            save_image(self.current_img.toImage(), f)
+            if is_svg:
+                import shutil
+                shutil.copyfile(self.current_url.toLocalFile(), f)
+            else:
+                from calibre.utils.img import save_image
+                save_image(self.current_img.toImage(), f)
 
     def copy_image(self):
         if self.current_img and not self.current_img.isNull():
@@ -327,18 +344,12 @@ class ImageView(QDialog):
         t = QTransform()
         t.rotate(90)
         pm = self.current_img = pm.transformed(t)
+        self.transformed = True
         self.label.setPixmap(pm)
-        self.label.adjustSize()
-        if self.fit_image.isChecked():
-            self.set_to_viewport_size()
-        else:
-            self.factor = 1
-            self.prefs.set('image_popup_zoom_factor', self.factor)
-            for sb in (self.scrollarea.horizontalScrollBar(),
-                    self.scrollarea.verticalScrollBar()):
-                sb.setValue(0)
+        self.adjust_image(self.factor)
 
     def __call__(self, use_exec=False):
+        self.transformed = False
         geom = self.avail_geom
         self.label.setPixmap(self.current_img)
         self.label.adjustSize()
@@ -350,8 +361,7 @@ class ImageView(QDialog):
             self.current_image_name = self.current_url
         reso = ''
         if self.current_img and not self.current_img.isNull():
-            if self.factor != 1:
-                self.adjust_image(self.factor)
+            self.adjust_image(self.factor)
             reso = f'[{self.current_img.width()}x{self.current_img.height()}]'
         title = _('Image: {name} {resolution}').format(name=self.current_image_name, resolution=reso)
         self.setWindowTitle(title)
@@ -369,11 +379,10 @@ class ImageView(QDialog):
         if on:
             self.maximized_at_last_fullscreen = self.isMaximized()
             self.showFullScreen()
+        elif self.maximized_at_last_fullscreen:
+            self.showMaximized()
         else:
-            if self.maximized_at_last_fullscreen:
-                self.showMaximized()
-            else:
-                self.showNormal()
+            self.showNormal()
 
 
 class ImagePopup:
@@ -381,6 +390,7 @@ class ImagePopup:
     def __init__(self, parent, prefs=gprefs):
         self.current_img = QPixmap()
         self.current_url = QUrl()
+        self.current_image_is_svg = False
         self.parent = parent
         self.dialogs = []
         self.prefs = prefs
@@ -389,6 +399,7 @@ class ImagePopup:
         if self.current_img.isNull():
             return
         d = ImageView(self.parent, self.current_img, self.current_url, prefs=self.prefs)
+        d.current_image_is_svg = self.current_image_is_svg
         self.dialogs.append(d)
         d.finished.connect(self.cleanup, type=Qt.ConnectionType.QueuedConnection)
         d()

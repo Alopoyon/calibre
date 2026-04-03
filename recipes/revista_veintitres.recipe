@@ -29,10 +29,10 @@ class Veintitres(BasicNewsRecipe):
     auto_cleanup = True
     auto_cleanup_keep = '//h1'
     resolve_internal_links = True
-    INDEX = "https://www.veintitres.com.ar"
-    extra_css = """
+    INDEX = 'https://www.veintitres.com.ar'
+    extra_css = '''
                                 img{margin-bottom: 0.8em}
-                            """
+                            '''
 
     conversion_options = {
         'comment': description,
@@ -69,7 +69,7 @@ class Veintitres(BasicNewsRecipe):
             self.report_progress(
                 0,
                 _('Fetching feed') + ' %s...' %
-                (feedtitle if feedtitle else feedurl)
+                (feedtitle or feedurl)
             )
             articles = []
             soup = self.index_to_soup(feedurl)

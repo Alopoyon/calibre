@@ -220,7 +220,7 @@ class EximDialog(Dialog):
         ll.setStyleSheet('QListView::item { padding: 5px }')
         ll.setAlternatingRowColors(True)
         lpaths = all_known_libraries()
-        for lpath in sorted(lpaths, key=lambda x:numeric_sort_key(os.path.basename(x))):
+        for lpath in sorted(lpaths, key=lambda x: numeric_sort_key(os.path.basename(x))):
             i = QListWidgetItem(self.export_lib_text(lpath), ll)
             i.setData(Qt.ItemDataRole.UserRole, lpath)
             i.setData(Qt.ItemDataRole.UserRole+1, lpaths[lpath])
@@ -247,6 +247,9 @@ class EximDialog(Dialog):
         self.ig = w = QWidget()
         s.addWidget(w)
         w.l = l = QVBoxLayout(w)
+        w.wla = la = QLabel(_('<b style="color: red">WARNING</b>: do not import calibre data you get from an untrusted source, as that is a security risk.'))
+        la.setWordWrap(True)
+        l.addWidget(la)
         w.la = la = QLabel(_('Specify the folder containing the previously exported calibre data that you'
                              ' wish to import.'))
         la.setWordWrap(True)
@@ -289,7 +292,7 @@ class EximDialog(Dialog):
         self.imported_lib_widgets = []
         self.frames = []
         l = self.slp.layout()
-        for lpath in sorted(self.importer.metadata['libraries'], key=lambda x:numeric_sort_key(os.path.basename(x))):
+        for lpath in sorted(self.importer.metadata['libraries'], key=lambda x: numeric_sort_key(os.path.basename(x))):
             f = QFrame(self)
             self.frames.append(f)
             l.addWidget(f)
@@ -341,7 +344,7 @@ class EximDialog(Dialog):
         return True
 
     def show_panel(self, which):
-        self.validate = self.run_action = lambda : True
+        self.validate = self.run_action = lambda: True
         if which is None:
             self.bb.setStandardButtons(QDialogButtonBox.StandardButton.Cancel)
         else:

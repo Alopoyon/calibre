@@ -3,7 +3,9 @@
 
 import json
 from collections import Counter, OrderedDict
+from functools import cache, lru_cache
 from html import escape
+from queue import Queue
 from threading import Thread
 
 import regex
@@ -14,6 +16,7 @@ from qt.core import (
     QFont,
     QHBoxLayout,
     QIcon,
+    QKeySequence,
     QLabel,
     QMenu,
     Qt,
@@ -26,7 +29,7 @@ from qt.core import (
 )
 
 from calibre.ebooks.conversion.search_replace import REGEX_FLAGS
-from calibre.gui2 import warning_dialog
+from calibre.gui2 import error_dialog, warning_dialog
 from calibre.gui2.gestures import GestureManager
 from calibre.gui2.progress_indicator import ProgressIndicator
 from calibre.gui2.viewer import get_boss
@@ -35,9 +38,6 @@ from calibre.gui2.viewer.web_view import get_data, get_manifest
 from calibre.gui2.viewer.widgets import ResultsDelegate, SearchBox
 from calibre.utils.icu import primary_collator_without_punctuation
 from calibre.utils.localization import _, ngettext
-from polyglot.builtins import iteritems
-from polyglot.functools import lru_cache
-from polyglot.queue import Queue
 
 
 class BusySpinner(QWidget):  # {{{
@@ -103,8 +103,8 @@ def words_and_interval_for_near(expr, default_interval=60):
     words = []
     interval = default_interval
 
-    for q in parts:
-        if q is parts[-1] and q.isdigit():
+    for i, q in enumerate(parts):
+        if q is parts[-1] and q.isdigit() and i > 1:
             interval = int(q)
         else:
             words.append(text_to_regex(q))
@@ -154,11 +154,28 @@ class Search:
             flags = self.regex_flags
             flags |= regex.DOTALL
             match_any_word = r'(?:\b(?:' + '|'.join(words) + r')\b)'
-            joiner = '.{1,%d}' % interval
+            joiner = f'.{{1,{interval}}}'
             full_pat = regex.compile(joiner.join(match_any_word for x in words), flags=flags)
             word_pats = tuple(regex.compile(rf'\b{x}\b', flags) for x in words)
             self._nsd = word_pats, full_pat
         return self._nsd
+
+    def validate(self, gui) -> bool:
+        if self.mode == 'near':
+            word_pats, full_pat = self.near_search_data
+            if len(word_pats) < 2:
+                error_dialog(gui, _('Invalid search expression'), _(
+                    'In nearby words mode, you must specify at least two words and an optional trailing number of characters.'
+                    ' The expression: {} does not have at least two words.').format(self.text), show=True)
+                return False
+        elif self.mode == 'regex':
+            try:
+                self.regex
+            except Exception as e:
+                error_dialog(gui, _('Invalid search expression'), _(
+                    'The search expression {} is not a valid regex.').format(self.text), det_msg=str(e), show=True)
+                return False
+        return True
 
     @property
     def is_empty(self):
@@ -183,9 +200,18 @@ class SearchFinished:
 class SearchResult:
 
     __slots__ = (
-        'search_query', 'before', 'text', 'after', 'q', 'spine_idx',
-        'index', 'file_name', 'is_hidden', 'offset', 'toc_nodes',
-        'result_num'
+        'after',
+        'before',
+        'file_name',
+        'index',
+        'is_hidden',
+        'offset',
+        'q',
+        'result_num',
+        'search_query',
+        'spine_idx',
+        'text',
+        'toc_nodes',
     )
 
     def __init__(self, search_query, before, text, after, q, name, spine_idx, index, offset, result_num):
@@ -221,7 +247,7 @@ class SearchResult:
         return str(namedtuple('SearchResult', s)(*tuple(getattr(self, x) for x in s)))
 
 
-@lru_cache(maxsize=None)
+@cache
 def searchable_text_for_name(name):
     ans = []
     add_text = ans.append
@@ -275,7 +301,7 @@ def searchable_text_for_name(name):
         if children:
             for child in reversed(children):
                 a((child, ignore_text_in_node_and_children, in_ruby))
-    for (tail, body) in removed_tails:
+    for tail, body in removed_tails:
         if tail is not None:
             body['l'] = tail
     return ''.join(ans), anchor_offset_map
@@ -339,7 +365,7 @@ class ToCOffsetMap:
             yield node
 
 
-@lru_cache(maxsize=None)
+@cache
 def toc_offset_map_for_name(name):
     anchor_map = searchable_text_for_name(name)[1]
     toc_data = get_toc_data()
@@ -410,7 +436,7 @@ def search_in_name(name, search_query, ctx_size=75):
                 return spans.append((s, s + l))
             primary_collator_without_punctuation().find_all(search_query.text, raw, a, search_query.mode == 'word')
 
-    for (start, end) in miter():
+    for start, end in miter():
         before = raw[max(0, start-ctx_size):start]
         after = raw[end:end+ctx_size]
         yield before, raw[start:end], after, start
@@ -499,7 +525,7 @@ class SearchInput(QWidget):  # {{{
             sss = vprefs.get(f'saved-{self.panel_name}-settings') or {}
             sss[new_text] = {'case_sensitive': self.case_sensitive.isChecked(), 'mode': self.query_type.currentData()}
             history = frozenset(history)
-            sss = {k: v for k, v in iteritems(sss) if k in history}
+            sss = {k: v for k, v in sss.items() if k in history}
             vprefs[f'saved-{self.panel_name}-settings'] = sss
 
     def history_cleared(self):
@@ -551,9 +577,11 @@ class SearchInput(QWidget):  # {{{
     def find_previous(self):
         self.emit_search(backwards=True)
 
-    def focus_input(self, text=None, search_type=None, case_sensitive=None):
+    def focus_input(self, text=None, search_type=None, case_sensitive=None, no_history=False):
         if text and hasattr(text, 'rstrip'):
             self.search_box.setText(text)
+            if no_history:
+                self.search_box.suppress_history = True
         if search_type is not None:
             idx = self.query_type.findData(search_type)
             if idx < 0:
@@ -565,6 +593,17 @@ class SearchInput(QWidget):  # {{{
         le = self.search_box.lineEdit()
         le.end(False)
         le.selectAll()
+
+    def set_tooltips(self, key_map: dict[str, list[str]]) -> None:
+        from calibre.gui2.viewer.shortcuts import index_to_key_sequence
+        def as_text(prefix, action):
+            ans = prefix
+            if idx := key_map.get(action):
+                x = _(' or ').join(index_to_key_sequence(x).toString(QKeySequence.SequenceFormat.NativeText) for x in idx)
+                ans += f' [{x}]'
+            return ans
+        self.next_button.setToolTip(as_text(_('Find next match'), 'next_match'))
+        self.prev_button.setToolTip(as_text(_('Find previous match'), 'previous_match'))
 # }}}
 
 
@@ -600,7 +639,6 @@ class Results(QTreeWidget):  # {{{
         m.addAction(QIcon.ic('minus.png'), _('Collapse all'), self.collapseAll)
         self.context_menu.popup(self.mapToGlobal(point))
         return True
-
 
     def viewportEvent(self, ev):
         if hasattr(self, 'gesture_manager'):
@@ -734,6 +772,7 @@ class Results(QTreeWidget):  # {{{
         item = self.currentItem()
         if item is not None:
             self.scrollToItem(item)
+
 # }}}
 
 
@@ -783,8 +822,8 @@ class SearchPanel(QWidget):  # {{{
     def update_hidden_message(self):
         self.hidden_message.setVisible(self.results.current_result_is_hidden)
 
-    def focus_input(self, text=None, search_type=None, case_sensitive=None):
-        self.search_input.focus_input(text, search_type, case_sensitive)
+    def focus_input(self, text=None, search_type=None, case_sensitive=None, no_history=False):
+        self.search_input.focus_input(text, search_type, case_sensitive, no_history=no_history)
 
     def search_cleared(self):
         self.results.clear_all_results()
@@ -793,6 +832,8 @@ class SearchPanel(QWidget):  # {{{
     def start_search(self, search_query, current_name):
         if self.current_search is not None and search_query == self.current_search:
             self.find_next_requested(search_query.backwards)
+            return
+        if not search_query.validate(self):
             return
         if self.searcher is None:
             self.searcher = Thread(name='Searcher', target=self.run_searches)
@@ -908,4 +949,8 @@ class SearchPanel(QWidget):  # {{{
             ev.accept()
             return
         return QWidget.keyPressEvent(self, ev)
+
+    def set_tooltips(self, key_map: dict[str, list[str]]) -> None:
+        self.search_input.set_tooltips(key_map)
+
 # }}}

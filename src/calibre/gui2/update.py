@@ -18,6 +18,7 @@ from calibre.utils.serialize import msgpack_dumps, msgpack_loads
 from polyglot.binary import as_hex_unicode, from_hex_bytes
 
 URL = 'https://code.calibre-ebook.com/latest'
+FALLBACK_URL = 'https://calibre-ebook.com/latest-version'
 # URL = 'http://localhost:8000/latest'
 NO_CALIBRE_UPDATE = (0, 0, 0)
 
@@ -43,11 +44,9 @@ def get_newest_version():
     except ssl.SSLError as err:
         if getattr(err, 'reason', None) != 'CERTIFICATE_VERIFY_FAILED':
             raise
-        # certificate verification failed, since the version check contains no
-        # critical information, ignore and proceed
-        # We have to do this as if the calibre CA certificate ever
-        # needs to be revoked, then we won't be able to do version checks
-        version = get_https_resource_securely(URL, headers=headers, cacerts=None)
+        from urllib.request import urlopen
+        # certificate verification failed, use fallback
+        version = urlopen(FALLBACK_URL).read()
     try:
         version = version.decode('utf-8').strip()
     except UnicodeDecodeError:
@@ -130,8 +129,7 @@ class UpdateNotification(QDialog):
         self.logo.setMaximumWidth(110)
         self.logo.setPixmap(QIcon.ic('lt.png').pixmap(100, 100))
         ver = calibre_version
-        if ver.endswith('.0'):
-            ver = ver[:-2]
+        ver = ver.removesuffix('.0')
         self.label = QLabel('<p>'+ _(
             'New version <b>{ver}</b> of {app} is available for download. '
             'See the <a href="{url}">new features</a>.').format(
@@ -214,12 +212,12 @@ class UpdateMixin:
             if has_plugin_updates:
                 plt = ngettext(' and one plugin update', ' and {} plugin updates', number_of_plugin_updates).format(number_of_plugin_updates)
             green = 'darkgreen' if QApplication.instance().is_dark_theme else 'green'
-            msg = ('<span style="color:%s; font-weight: bold">%s: '
-                    '<a href="update:%s">%s%s</a></span>') % (
+            msg = ('<span style="color:{}; font-weight: bold">{}: '
+                    '<a href="update:{}">{}{}</a></span>').format(
                             green, _('Update available'), version_url, calibre_version, plt)
         else:
             plt = ngettext('plugin update available', 'plugin updates available', number_of_plugin_updates)
-            msg = ('<a href="update:%s">%d %s</a>')%(version_url, number_of_plugin_updates, plt)
+            msg = f'<a href="update:{version_url}">{number_of_plugin_updates} {plt}</a>'
         self.status_bar.update_label.setText(msg)
         self.status_bar.update_label.setVisible(True)
 

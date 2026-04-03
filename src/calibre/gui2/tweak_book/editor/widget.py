@@ -12,9 +12,9 @@ from qt.core import (
     QAction,
     QApplication,
     QColor,
+    QDialog,
     QIcon,
     QImage,
-    QInputDialog,
     QMainWindow,
     QMenu,
     QPainter,
@@ -36,13 +36,12 @@ from calibre.gui2.tweak_book.editor import CLASS_ATTRIBUTE_PROPERTY, CSS_PROPERT
 from calibre.gui2.tweak_book.editor.help import help_url
 from calibre.gui2.tweak_book.editor.text import TextEdit
 from calibre.utils.icu import primary_sort_key, utf16_length
-from polyglot.builtins import itervalues, string_or_bytes
 
 
 def create_icon(text, palette=None, sz=None, divider=2, fill='white'):
-    if isinstance(fill, string_or_bytes):
+    if isinstance(fill, (str, bytes)):
         fill = QColor(fill)
-    sz = sz or int(math.ceil(tprefs['toolbar_icon_size'] * QApplication.instance().devicePixelRatio()))
+    sz = sz or math.ceil(tprefs['toolbar_icon_size'] * QApplication.instance().devicePixelRatio())
     if palette is None:
         palette = QApplication.palette()
     img = QImage(sz, sz, QImage.Format.Format_ARGB32)
@@ -112,7 +111,7 @@ def register_text_editor_actions(_reg, palette):
     for i, name in enumerate(('h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p')):
         text = ('&' + name) if name == 'p' else (name[0] + '&' + name[1])
         desc = _('Convert the paragraph to &lt;%s&gt;') % name
-        ac = reg(create_icon(name), text, ('rename_block_tag', name), 'rename-block-tag-' + name, 'Ctrl+%d' % (i + 1), desc, syntaxes=())
+        ac = reg(create_icon(name), text, ('rename_block_tag', name), 'rename-block-tag-' + name, f'Ctrl+{i + 1}', desc, syntaxes=())
         ac.setToolTip(desc)
 
     for transform, text in [
@@ -264,11 +263,7 @@ class Editor(QMainWindow):
         for name in names:
             m.addAction(name, partial(self.insert_tag, name))
         m.addSeparator()
-        m.addAction(_('Add a tag to this menu'), self.add_insert_tag)
-        if names:
-            m = m.addMenu(_('Remove from this menu'))
-            for name in names:
-                m.addAction(name, partial(self.remove_insert_tag, name))
+        m.addAction(_('Manage the entries in this menu'), self.manage_insert_tags)
 
     def insert_tag(self, name):
         self.editor.insert_tag(name)
@@ -281,23 +276,11 @@ class Editor(QMainWindow):
         tprefs['insert_tag_mru'] = mru
         self._build_insert_tag_button_menu()
 
-    def add_insert_tag(self):
-        name, ok = QInputDialog.getText(self, _('Name of tag to add'), _(
-            'Enter the name of the tag'))
-        if ok:
-            mru = tprefs['insert_tag_mru']
-            mru.insert(0, name)
-            tprefs['insert_tag_mru'] = mru
+    def manage_insert_tags(self):
+        from calibre.gui2.tweak_book.widgets import ManageTagList
+        d = ManageTagList(self)
+        if d.exec() == QDialog.DialogCode.Accepted:
             self._build_insert_tag_button_menu()
-
-    def remove_insert_tag(self, name):
-        mru = tprefs['insert_tag_mru']
-        try:
-            mru.remove(name)
-        except ValueError:
-            pass
-        tprefs['insert_tag_mru'] = mru
-        self._build_insert_tag_button_menu()
 
     def set_request_completion(self, callback=None, doc_name=None):
         self.editor.request_completion = callback
@@ -374,7 +357,7 @@ class Editor(QMainWindow):
     def toolbar_floated(self, floating):
         if not floating:
             self.save_state()
-            for ed in itervalues(editors):
+            for ed in editors.values():
                 if ed is not self:
                     ed.restore_state()
 
@@ -382,10 +365,10 @@ class Editor(QMainWindow):
         for bar in self.bars:
             if bar.isFloating():
                 return
-        tprefs['%s-editor-state' % self.syntax] = bytearray(self.saveState())
+        tprefs[f'{self.syntax}-editor-state'] = bytearray(self.saveState())
 
     def restore_state(self):
-        state = tprefs.get('%s-editor-state' % self.syntax, None)
+        state = tprefs.get(f'{self.syntax}-editor-state', None)
         if state is not None:
             self.restoreState(state)
         for bar in self.bars:
@@ -402,7 +385,7 @@ class Editor(QMainWindow):
                 ac = actions[name]
             except KeyError:
                 if DEBUG:
-                    prints('Unknown editor tool: %r' % name)
+                    prints(f'Unknown editor tool: {name!r}')
                 return
             bar.addAction(ac)
             if name == 'insert-tag':
@@ -423,13 +406,13 @@ class Editor(QMainWindow):
                     # For some unknown reason this button is occasionally a
                     # QPushButton instead of a QToolButton
                     ch.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-                for name in tuple('h%d' % d for d in range(1, 7)) + ('p',):
-                    m.addAction(actions['rename-block-tag-%s' % name])
+                for name in tuple(f'h{d}' for d in range(1, 7)) + ('p',):
+                    m.addAction(actions[f'rename-block-tag-{name}'])
 
         for name in tprefs.get('editor_common_toolbar', ()):
             add_action(name, self.action_bar)
 
-        for name in tprefs.get('editor_%s_toolbar' % self.syntax, ()):
+        for name in tprefs.get(f'editor_{self.syntax}_toolbar', ()):
             add_action(name, self.tools_bar)
 
         if self.syntax == 'html':
@@ -600,7 +583,7 @@ class Editor(QMainWindow):
                 m.addAction(_('Show help for: %s') % word, partial(open_url, url))
 
         for x in ('undo', 'redo'):
-            ac = actions['editor-%s' % x]
+            ac = actions[f'editor-{x}']
             if ac.isEnabled():
                 a(ac)
         m.addSeparator()
@@ -650,7 +633,7 @@ def launch_editor(path_to_edit, path_is_raw=False, syntax='html', callback=None)
     opts = option_parser().parse_args([])
     app = Application([])
     # Create the actions that are placed into the editors toolbars
-    main = Main(opts)  # noqa
+    main = Main(opts)  # noqa: F841
     if path_is_raw:
         raw = path_to_edit
     else:
@@ -659,7 +642,7 @@ def launch_editor(path_to_edit, path_is_raw=False, syntax='html', callback=None)
         ext = path_to_edit.rpartition('.')[-1].lower()
         if ext in ('html', 'htm', 'xhtml', 'xhtm'):
             syntax = 'html'
-        elif ext in ('css',):
+        elif ext == 'css':
             syntax = 'css'
     t = Editor(syntax)
     t.data = raw

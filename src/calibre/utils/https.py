@@ -4,26 +4,25 @@
 __license__ = 'GPL v3'
 __copyright__ = '2014, Kovid Goyal <kovid at kovidgoyal.net>'
 
+import http.client
 import ssl
 from contextlib import closing
+from urllib.parse import urlsplit
 
 from calibre import get_proxies
 from calibre.utils.resources import get_path as P
-from polyglot import http_client
-from polyglot.urllib import urlsplit
 
 
 class HTTPError(ValueError):
 
     def __init__(self, url, code):
-        msg = '%s returned an unsupported http response code: %d (%s)' % (
-                url, code, http_client.responses.get(code, None))
+        msg = f'{url} returned an unsupported http response code: {code} ({http.client.responses.get(code, None)})'
         ValueError.__init__(self, msg)
         self.code = code
         self.url = url
 
 
-class HTTPSConnection(http_client.HTTPSConnection):
+class HTTPSConnection(http.client.HTTPSConnection):
 
     def __init__(self, *args, **kwargs):
         cafile = kwargs.pop('cert_file', None)
@@ -37,7 +36,7 @@ class HTTPSConnection(http_client.HTTPSConnection):
             kwargs['context'].verify_flags &= ~ssl.VERIFY_X509_STRICT
         else:
             kwargs['context'].verify_flags |= ssl.VERIFY_X509_STRICT
-        http_client.HTTPSConnection.__init__(self, *args, **kwargs)
+        http.client.HTTPSConnection.__init__(self, *args, **kwargs)
 
 
 def get_https_resource_securely(
@@ -84,15 +83,15 @@ def get_https_resource_securely(
             path += '?' + p.query
         c.request('GET', path, headers=headers or {})
         response = c.getresponse()
-        if response.status in (http_client.MOVED_PERMANENTLY, http_client.FOUND, http_client.SEE_OTHER):
+        if response.status in (http.client.MOVED_PERMANENTLY, http.client.FOUND, http.client.SEE_OTHER):
             if max_redirects <= 0:
                 raise ValueError('Too many redirects, giving up')
             newurl = response.getheader('Location', None)
             if newurl is None:
-                raise ValueError('%s returned a redirect response with no Location header' % url)
+                raise ValueError(f'{url} returned a redirect response with no Location header')
             return get_https_resource_securely(
                 newurl, cacerts=cacerts, timeout=timeout, max_redirects=max_redirects-1, get_response=get_response)
-        if response.status != http_client.OK:
+        if response.status != http.client.OK:
             raise HTTPError(url, response.status)
         if get_response:
             return response

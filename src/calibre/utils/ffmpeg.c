@@ -239,7 +239,14 @@ open_output_file(Transcoder *t) {
     // Setup encoding parameters
     av_channel_layout_default(&t->enc_ctx->ch_layout, t->dec_ctx->ch_layout.nb_channels);
     t->enc_ctx->sample_rate = t->dec_ctx->sample_rate;
+    int ret;
+#if LIBAVCODEC_VERSION_MAJOR >= 61 && LIBAVCODEC_VERSION_MINOR >= 14
+    const enum AVSampleFormat *sample_fmts = NULL;
+    ret = avcodec_get_supported_config(t->dec_ctx, output_codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void**)&sample_fmts, NULL);
+    t->enc_ctx->sample_fmt = (ret >= 0 && sample_fmts) ? sample_fmts[0] : t->dec_ctx->sample_fmt;
+#else
     t->enc_ctx->sample_fmt = output_codec->sample_fmts[0];
+#endif
     t->enc_ctx->bit_rate = t->output_bitrate;
     if (!t->enc_ctx->bit_rate) {
         switch (output_codec->id) {
@@ -252,7 +259,6 @@ open_output_file(Transcoder *t) {
     stream->time_base.den = t->dec_ctx->sample_rate;
     stream->time_base.num = 1;
     if (t->ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) t->enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    int ret;
     check_call(avcodec_open2, t->enc_ctx, output_codec, NULL);
     check_call(avcodec_parameters_from_context, stream->codecpar, t->enc_ctx);
     return Py_True;
@@ -504,7 +510,7 @@ resample_raw_audio_16bit(PyObject *self, PyObject *args) {
     );
     Py_END_ALLOW_THREADS
     if (ret < 0) { free_resources; return averror_as_python_with_gil_held(ret, __LINE__); }
-    output_size = ret * output_num_channels * bytes_per_sample;
+    output_size = (int64_t)ret * (int64_t)output_num_channels * bytes_per_sample;
     PyObject *ans = PyBytes_FromStringAndSize((char*)output, output_size);
     free_resources;
 #undef free_resources

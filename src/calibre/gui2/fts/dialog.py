@@ -36,7 +36,7 @@ class FTSDialog(Dialog):
         l = QVBoxLayout(self)
         self.fat_warning = fw = QLabel(
             f'<span style="color:red; font-weight: bold">{_("WARNING")}:</span> ' +
-            _('The calibre library is on a FAT drive, indexing more than a few hundred books wont work.') +
+            _("The calibre library is on a FAT drive, indexing more than a few hundred books won't work.") +
             f' <a href="xxx" style="text-decoration: none">{_("Learn more")}</a>')
         # fw.setVisible(False)
         fw.linkActivated.connect(self.show_fat_details)
@@ -60,6 +60,11 @@ class FTSDialog(Dialog):
         self.update_indexing_label()
         self.scan_status.indexing_progress_changed.connect(self.update_indexing_label)
         self.addAction(self.results_panel.jump_to_current_book_action)
+        self.addAction(self.results_panel.mark_current_book_action)
+        self.addAction(self.results_panel.mark_all_books_action)
+        self.addAction(self.results_panel.select_all_books_action)
+        self.addAction(self.results_panel.mark_select_all_books_action)
+        self.addAction(self.results_panel.focus_search_action)
 
     def show_fat_details(self):
         warning_dialog(self, _('Library on a FAT drive'), _(

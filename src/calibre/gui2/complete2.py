@@ -6,6 +6,7 @@ __copyright__ = '2012, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
 from contextlib import suppress
+from functools import partial
 
 from qt.core import (
     QAbstractItemView,
@@ -30,12 +31,25 @@ from qt.core import (
 
 from calibre.constants import ismacos
 from calibre.gui2.widgets import EnComboBox, LineEditECM
+from calibre.spell.break_iterator import get_word_break_iterator_with_extra_chars
 from calibre.utils.config import tweaks
-from calibre.utils.icu import primary_contains, primary_startswith, sort_key
+from calibre.utils.icu import primary_collator, primary_contains, primary_find, primary_sort_key, primary_startswith, sort_key, word_prefix_find
 
 
 def containsq(x, prefix):
     return primary_contains(prefix, x)
+
+
+def hierarchy_startswith(x, prefix, sep='.'):
+    return primary_startswith(x, prefix) or primary_contains(sep + prefix, x)
+
+
+def word_prefix_matcher(collator, it, x, prefix):
+    return word_prefix_find(collator, it, x, prefix) >= 0
+
+
+def get_completion_mode() -> str:
+    return getattr(get_completion_mode, 'override', None) or tweaks['completion_mode']
 
 
 class CompleteModel(QAbstractListModel):  # {{{
@@ -46,6 +60,11 @@ class CompleteModel(QAbstractListModel):  # {{{
         self.sort_func = sort_func
         self.all_items = self.current_items = ()
         self.current_prefix = ''
+        completion_mode = get_completion_mode()
+        self.use_startswith_search = completion_mode == 'prefix'
+        self.use_word_prefix_search = completion_mode == 'word-prefix'
+        ewbc = str(tweaks['extra_word_break_chars'] or '')
+        self.extra_word_break_chars = ''.join(set(ewbc))
 
     def set_items(self, items):
         if self.strip_completion_entries:
@@ -58,7 +77,7 @@ class CompleteModel(QAbstractListModel):  # {{{
         self.current_prefix = ''
         self.endResetModel()
 
-    def set_completion_prefix(self, prefix):
+    def set_completion_prefix(self, prefix, hierarchy_separator: str = ''):
         old_prefix = self.current_prefix
         self.current_prefix = prefix
         if prefix == old_prefix:
@@ -70,9 +89,39 @@ class CompleteModel(QAbstractListModel):  # {{{
             return
         subset = prefix.startswith(old_prefix)
         universe = self.current_items if subset else self.all_items
-        func = primary_startswith if tweaks['completion_mode'] == 'prefix' else containsq
+        extra_break_chars = hierarchy_separator + self.extra_word_break_chars
+        word_iterator = get_word_break_iterator_with_extra_chars(extra_break_chars=extra_break_chars)
+        collator = primary_collator()
+        word_prefix_match = partial(word_prefix_matcher, collator, word_iterator)
+        if self.use_word_prefix_search:
+            func = word_prefix_match
+        else:
+            func = primary_startswith if self.use_startswith_search else containsq
+        if func is primary_startswith and hierarchy_separator:
+            if hierarchy_separator != '.':
+                func = partial(hierarchy_startswith, sep=hierarchy_separator)
+            else:
+                func = hierarchy_startswith
         self.beginResetModel()
         self.current_items = tuple(x for x in universe if func(x, prefix))
+        if func is containsq:
+            def skey(x):
+                sk = primary_sort_key(x)
+                x = x.lower()
+                try:
+                    ans = primary_find(prefix, x)[0]
+                    if ans == -1:
+                        ans = len(x) + 10
+                    return ans, sk
+                except Exception:
+                    return len(x) + 10, sk
+            self.current_items = tuple(sorted(self.current_items, key=skey))
+        elif func is word_prefix_match:
+            def skey(x):
+                sk = primary_sort_key(x)
+                pos = word_prefix_find(collator, word_iterator, x, prefix)
+                return (pos if pos >= 0 else len(x) + 10), sk
+            self.current_items = tuple(sorted(self.current_items, key=skey))
         self.endResetModel()
 
     def rowCount(self, *args):
@@ -143,8 +192,8 @@ class Completer(QListView):  # {{{
         if self.isVisible():
             self.relayout_needed.emit()
 
-    def set_completion_prefix(self, prefix):
-        self.model().set_completion_prefix(prefix)
+    def set_completion_prefix(self, prefix, hierarchy_separator: str = ''):
+        self.model().set_completion_prefix(prefix, hierarchy_separator=hierarchy_separator)
         if self.isVisible():
             self.relayout_needed.emit()
 
@@ -327,6 +376,7 @@ class LineEdit(QLineEdit, LineEditECM):
         self.sep = ','
         self.space_before_sep = False
         self.add_separator = True
+        self.hierarchy_separator = ''
         self.original_cursor_pos = None
         completer_widget = (self if completer_widget is None else
                 completer_widget)
@@ -339,9 +389,13 @@ class LineEdit(QLineEdit, LineEditECM):
         self.mcompleter.relayout_needed.connect(self.relayout)
         self.mcompleter.setFocusProxy(completer_widget)
         self.textEdited.connect(self.text_edited)
+        self.cursorPositionChanged.connect(self.cursor_position_changed)
         self.no_popup = False
 
     # Interface {{{
+    def set_use_startswith_search(self, yes: bool) -> None:
+        self.mcompleter.model().use_startswith_search = yes
+
     def set_sort_func(self, sort_func):
         self.mcompleter.model().sort_func = sort_func
 
@@ -350,6 +404,9 @@ class LineEdit(QLineEdit, LineEditECM):
 
     def set_separator(self, sep):
         self.sep = sep
+
+    def set_hierarchy_separator(self, sep: str = '') -> None:
+        self.hierarchy_separator = sep
 
     def set_space_before_sep(self, space_before):
         self.space_before_sep = space_before
@@ -392,7 +449,7 @@ class LineEdit(QLineEdit, LineEditECM):
         orig = None
         if show_all:
             orig = self.mcompleter.model().current_prefix
-            self.mcompleter.set_completion_prefix('')
+            self.mcompleter.set_completion_prefix('', self.hierarchy_separator)
         if not self.mcompleter.model().current_items:
             self.mcompleter.hide()
             return
@@ -407,6 +464,15 @@ class LineEdit(QLineEdit, LineEditECM):
     def text_edited(self, *args):
         if self.no_popup:
             return
+        self._update_and_complete()
+
+    def cursor_position_changed(self, old, new):
+        if self.no_popup:
+            return
+        if self.mcompleter.isVisible():
+            self._update_and_complete()
+
+    def _update_and_complete(self):
         self.update_completions()
         select_first = len(self.mcompleter.model().current_prefix) > 0
         if not select_first:
@@ -421,7 +487,7 @@ class LineEdit(QLineEdit, LineEditECM):
         complete_prefix = prefix.lstrip()
         if self.sep:
             complete_prefix = prefix.split(self.sep)[-1].lstrip()
-        self.mcompleter.set_completion_prefix(complete_prefix)
+        self.mcompleter.set_completion_prefix(complete_prefix, self.hierarchy_separator)
 
     def get_completed_text(self, text):
         'Get completed text in before and after parts'
@@ -494,11 +560,21 @@ class EditWithComplete(EnComboBox):
         finally:
             self.disable_popup = orig
 
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up) and not self.lineEdit().text() and not self.disable_popup:
+            e.accept()
+            self.showPopup()
+            return
+        super().keyPressEvent(e)
+
     def update_items_cache(self, complete_items):
         self.lineEdit().update_items_cache(complete_items)
 
     def set_separator(self, sep):
         self.lineEdit().set_separator(sep)
+
+    def set_hierarchy_separator(self, sep):
+        self.lineEdit().set_hierarchy_separator(sep)
 
     def set_space_before_sep(self, space_before):
         self.lineEdit().set_space_before_sep(space_before)
@@ -588,10 +664,14 @@ if __name__ == '__main__':
     app = Application([])
     d = QDialog()
     d.setLayout(QVBoxLayout())
+    get_completion_mode.override = 'word-prefix'
     le = EditWithComplete(d)
     d.layout().addWidget(le)
     items = ['oane\n line2\n line3', 'otwo', 'othree', 'ooone', 'ootwo', 'other', 'odd', 'over', 'orc', 'oven', 'owe',
-        'oothree', 'a1', 'a2','Edgas', 'Èdgar', 'Édgaq', 'Edgar', 'Édgar']
+        'oothree', 'a1', 'a2','Edgas', 'Èdgar', 'Édgaq', 'Edgar', 'Édgar', 'Asimov', 'Isaac Asimov', 'Quasimodo',
+        'Fiction.Cozy Mystery', 'Fiction.Mystery',
+    ]
+    le.set_hierarchy_separator('.')
     le.update_items_cache(items)
     le.show_initial_value('')
     d.exec()

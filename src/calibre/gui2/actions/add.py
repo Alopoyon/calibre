@@ -25,7 +25,6 @@ from calibre.utils.config_base import tweaks
 from calibre.utils.filenames import ascii_filename, make_long_path_useable
 from calibre.utils.icu import sort_key
 from calibre.utils.localization import ngettext
-from polyglot.builtins import iteritems, string_or_bytes
 
 
 def get_filters():
@@ -48,8 +47,8 @@ class AddAction(InterfaceAction):
 
     name = 'Add Books'
     action_spec = (_('Add books'), 'add_book.png',
-            _('Add books to the calibre library/device from files on your computer')
-            , _('A'))
+            _('Add books to the calibre library/device from files on your computer'),
+            _('A'))
     action_type = 'current'
     action_add_menu = True
     action_menu_clone_qaction = _('Add books from a single folder')
@@ -191,10 +190,22 @@ class AddAction(InterfaceAction):
         fmt_map = {os.path.splitext(fpath)[1][1:].upper():fpath for fpath in paths}
 
         for id_ in ids:
-            for fmt, fpath in iteritems(fmt_map):
+            for fmt, fpath in fmt_map.items():
                 if fmt:
                     db.add_format_with_hooks(id_, fmt, fpath, index_is_id=True,
                         notify=True)
+            if not db.has_cover(id_):
+                from calibre.ebooks.metadata.meta import get_metadata
+                for fmt, fpath in fmt_map.items():
+                    if fmt:
+                        try:
+                            with open(fpath, 'rb') as f:
+                                mi = get_metadata(f, stream_type=fmt.lower())
+                            if mi.cover_data and mi.cover_data[1]:
+                                db.new_api.set_cover({id_: mi.cover_data[1]})
+                                break
+                        except Exception:
+                            pass
         current_idx = self.gui.library_view.currentIndex()
         if current_idx.isValid():
             self.gui.library_view.model().current_changed(current_idx, current_idx)
@@ -318,7 +329,7 @@ class AddAction(InterfaceAction):
         self.add_recursive(False)
 
     def add_recursive_question(self):
-        single =  question_dialog(self.gui, _('Multi-file books?'), _(
+        single = question_dialog(self.gui, _('Multi-file books?'), _(
             'Assume all e-book files in a single folder are multiple formats of the same book?'))
         self.add_recursive(single)
 
@@ -455,7 +466,7 @@ class AddAction(InterfaceAction):
             self.add_by_isbn_ids.add(db.import_book(mi, fmts))
             self.isbn_add_dialog.value += 1
             QTimer.singleShot(10, self.do_one_isbn_add)
-        except:
+        except Exception:
             self.isbn_add_dialog.accept()
             raise
 
@@ -541,7 +552,7 @@ class AddAction(InterfaceAction):
             self._add_extra_files({cid}, add_as_data_files)
 
     def __add_filesystem_book(self, paths, allow_device=True):
-        if isinstance(paths, string_or_bytes):
+        if isinstance(paths, (str, bytes)):
             paths = [paths]
         books = [path for path in map(os.path.abspath, paths) if os.access(path,
             os.R_OK)]
@@ -670,7 +681,7 @@ class AddAction(InterfaceAction):
             vmsg = getattr(self.gui.device_manager.device, 'VIRTUAL_BOOK_EXTENSION_MESSAGE', None) or _(
                 'The following books are virtual and cannot be added'
                 ' to the calibre library:')
-            info_dialog(self.gui,  _('Not Implemented'), vmsg, '\n'.join(remove), show=True)
+            info_dialog(self.gui, _('Not Implemented'), vmsg, '\n'.join(remove), show=True)
             if not paths:
                 return
         if not paths or len(paths) == 0:
@@ -696,7 +707,7 @@ class AddAction(InterfaceAction):
             self.gui.device_job_exception(job)
             return
         paths = job.result
-        ok_paths = [x for x in paths if isinstance(x, string_or_bytes)]
+        ok_paths = [x for x in paths if isinstance(x, (str, bytes))]
         failed_paths = [x for x in paths if isinstance(x, tuple)]
         if failed_paths:
             if not ok_paths:

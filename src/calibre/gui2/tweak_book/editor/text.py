@@ -179,8 +179,14 @@ class TextEdit(PlainTextEdit):
 
         def insert_text(text):
             c = self.textCursor()
-            c.insertText(text)
+            c.insertText(unicodedata.normalize('NFC', text))
             self.setTextCursor(c)
+            text = self.toPlainText()
+            if (ntext := unicodedata.normalize('NFC', text)) != text:
+                pos = c.position()
+                self.setPlainText(ntext)
+                c.setPosition(pos)
+                self.setTextCursor(c)
             self.ensureCursorVisible()
 
         def add_file(name, data, mt=None):
@@ -282,7 +288,7 @@ class TextEdit(PlainTextEdit):
         self.setFont(font)
         self.highlighter.apply_theme(theme)
         fm = self.fontMetrics()
-        self.number_width = max(map(lambda x:fm.horizontalAdvance(str(x)), range(10)))
+        self.number_width = max(fm.horizontalAdvance(str(x)) for x in range(10))
         self.size_hint = QSize(self.expected_geometry[0] * fm.averageCharWidth(), self.expected_geometry[1] * fm.height())
         self.highlight_color = theme_color(theme, 'HighlightRegion', 'bg')
         self.highlight_cursor_line()
@@ -409,11 +415,10 @@ class TextEdit(PlainTextEdit):
                 start, end = textpos + end, textpos + start
             else:
                 start, end = m_start + start, m_start + end
+        elif reverse:
+            start, end = m_start + end, m_start + start
         else:
-            if reverse:
-                start, end = m_start + end, m_start + start
-            else:
-                start, end = c.anchor() + start, c.anchor() + end
+            start, end = c.anchor() + start, c.anchor() + end
 
         c.clearSelection()
         c.setPosition(start)
@@ -499,13 +504,12 @@ class TextEdit(PlainTextEdit):
             if reverse:
                 textpos = c.anchor()
                 start, end = textpos + end, textpos + start
+        elif reverse:
+            # Put the cursor at the start of the match
+            start, end = end, start
         else:
-            if reverse:
-                # Put the cursor at the start of the match
-                start, end = end, start
-            else:
-                textpos = c.anchor()
-                start, end = textpos + start, textpos + end
+            textpos = c.anchor()
+            start, end = textpos + start, textpos + end
         c.clearSelection()
         c.setPosition(start)
         c.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
@@ -630,7 +634,7 @@ class TextEdit(PlainTextEdit):
             c.movePosition(QTextCursor.MoveOperation.Start)
             self.setTextCursor(c)
             return True
-        base = r'''%%s\s*=\s*['"]{0,1}%s''' % regex.escape(anchor)
+        base = rf'''%s\s*=\s*['"]{{0,1}}{regex.escape(anchor)}'''
         raw = str(self.toPlainText())
         m = regex.search(base % 'id', raw)
         if m is None:
@@ -817,12 +821,11 @@ class TextEdit(PlainTextEdit):
             return self.text_for_range(c.block(), r)
 
     def select_class_name_at_cursor(self, cursor):
-        valid = re.compile(r'[\w_0-9\-]+', flags=re.UNICODE)
+        valid = re.compile(r'^[\w_-]+$', flags=re.UNICODE)
 
         def keep_going():
             q = cursor.selectedText()
-            m = valid.match(q)
-            return m is not None and m.group() == q
+            return valid.match(q) is not None
 
         def run_loop(forward=True):
             cursor.setPosition(pos)
@@ -877,7 +880,7 @@ class TextEdit(PlainTextEdit):
         c = self.textCursor()
         left = min(c.anchor(), c.position())
         right = max(c.anchor(), c.position())
-        # For speed we use QPlainTextEdit's toPlainText as we dont care about
+        # For speed we use QPlainTextEdit's toPlainText as we don't care about
         # spaces in this context
         raw = str(QPlainTextEdit.toPlainText(self))
         # Make sure the left edge is not within a <>
@@ -908,9 +911,9 @@ class TextEdit(PlainTextEdit):
                 return
             r, g, b, a = color.getRgb()
             if a == 255:
-                color = 'rgb(%d, %d, %d)' % (r, g, b)
+                color = f'rgb({r}, {g}, {b})'
             else:
-                color = 'rgba(%d, %d, %d, %.2g)' % (r, g, b, a/255)
+                color = f'rgba({r}, {g}, {b}, {a / 255:.2g})'
         prefix, suffix = {
             'bold': ('<b>', '</b>'),
             'italic': ('<i>', '</i>'),
@@ -918,8 +921,8 @@ class TextEdit(PlainTextEdit):
             'strikethrough': ('<span style="text-decoration: line-through">', '</span>'),
             'superscript': ('<sup>', '</sup>'),
             'subscript': ('<sub>', '</sub>'),
-            'color': ('<span style="color: %s">' % color, '</span>'),
-            'background-color': ('<span style="background-color: %s">' % color, '</span>'),
+            'color': (f'<span style="color: {color}">', '</span>'),
+            'background-color': (f'<span style="background-color: {color}">', '</span>'),
         }[formatting]
         self.smarts.surround_with_custom_tag(self, prefix, suffix)
 
@@ -937,7 +940,7 @@ class TextEdit(PlainTextEdit):
             c.setPosition(right, QTextCursor.MoveMode.KeepAnchor)
             href = prepare_string_for_xml(href, True)
             if fullpage:
-                template =  '''\
+                template = '''\
 <div style="page-break-before:always; page-break-after:always; page-break-inside:avoid">\
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" \
 version="1.1" width="100%%" height="100%%" viewBox="0 0 {w} {h}" preserveAspectRatio="{a}">\

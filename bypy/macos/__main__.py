@@ -22,7 +22,6 @@ from itertools import repeat
 from bypy.constants import OUTPUT_DIR, PREFIX, PYTHON, python_major_minor_version
 from bypy.constants import SRC as CALIBRE_DIR
 from bypy.freeze import extract_extension_modules, fix_pycryptodome, freeze_python, is_package_dir, path_to_freeze_dir
-from bypy.pkgs.piper import copy_piper_dir
 from bypy.utils import current_dir, get_arches_in_binary, mkdtemp, py_compile, timeit, walk
 
 abspath, join, basename, dirname = os.path.abspath, os.path.join, os.path.basename, os.path.dirname
@@ -47,7 +46,7 @@ APPNAME, VERSION = calibre_constants['appname'], calibre_constants['version']
 basenames, main_modules, main_functions = calibre_constants['basenames'], calibre_constants['modules'], calibre_constants['functions']
 ARCH_FLAGS = '-arch x86_64 -arch arm64'.split()
 EXPECTED_ARCHES = {'x86_64', 'arm64'}
-MINIMUM_SYSTEM_VERSION = '13.0.0'
+MINIMUM_SYSTEM_VERSION = '14.0.0'
 
 
 def compile_launcher_lib(contents_dir, base, pyver, inc_dir):
@@ -485,7 +484,7 @@ class Freeze:
     @flush
     def add_poppler(self):
         print('\nAdding poppler')
-        for x in ('libopenjp2.7.dylib', 'libpoppler.130.dylib',):
+        for x in ('libopenjp2.7.dylib', 'libpoppler.154.dylib', 'liblcms2.2.dylib',):
             self.install_dylib(join(PREFIX, 'lib', x))
         for x in ('pdftohtml', 'pdftoppm', 'pdfinfo', 'pdftotext'):
             self.install_dylib(
@@ -538,11 +537,11 @@ class Freeze:
             self.fix_dependencies_in_lib(dest)
 
         for x in (
-            'usb-1.0.0', 'mtp.9', 'chm.0', 'sqlite3.0', 'hunspell-1.7.0',
-            'icudata.73', 'icui18n.73', 'icuio.73', 'icuuc.73', 'hyphen.0', 'uchardet.0',
-            'stemmer.0', 'xslt.1', 'exslt.0', 'xml2.2', 'z.1', 'unrar', 'lzma.5',
+            'usb-1.0.0', 'mtp.9', 'chm.0', 'sqlite3', 'hunspell-1.7.0',
+            'icudata.78', 'icui18n.78', 'icuio.78', 'icuuc.78', 'hyphen.0', 'uchardet.0',
+            'stemmer.0', 'xslt.1', 'exslt.0', 'xml2.16', 'z.1', 'unrar', 'lzma.5',
             'brotlicommon.1', 'brotlidec.1', 'brotlienc.1', 'zstd.1', 'jbig.2.1', 'tiff.6',
-            'crypto.3', 'ssl.3', 'iconv.2',  # 'ltdl.7'
+            'crypto.3', 'ssl.3', 'iconv.2', 'espeak-ng.1', 'onnxruntime.1.23.2',  # 'ltdl.7'
         ):
             x = 'lib%s.dylib' % x
             src = join(PREFIX, 'lib', x)
@@ -557,8 +556,8 @@ class Freeze:
                     dylib = join(dest, dylib)
                     self.set_id(dylib, self.FID + '/' + x + '/' + os.path.basename(dylib))
                     self.fix_dependencies_in_lib(dylib)
-        # Piper TTS
-        copy_piper_dir(PREFIX, self.frameworks_dir)
+        # espeak voices used for piper phonemization
+        shutil.copytree(join(PREFIX, 'share', 'espeak-ng-data'), join(self.resources_dir, 'espeak-ng-data'))
 
     @flush
     def add_site_packages(self):
@@ -614,12 +613,15 @@ class Freeze:
 
     @flush
     def add_package_dir(self, x, dest=None):
+        is_kakasi = 'pykakasi' in x
+        allowed_exts = ('', '.py', '.so')
+        if is_kakasi:
+            allowed_exts += ('.db',)
         def ignore(root, files):
             ans = []
             for y in files:
                 ext = os.path.splitext(y)[1]
-                if ext not in ('', '.py', '.so') or \
-                        (not ext and not os.path.isdir(join(root, y))):
+                if ext not in allowed_exts or (not ext and not os.path.isdir(join(root, y))):
                     ans.append(y)
 
             return ans

@@ -16,11 +16,12 @@ from calibre.utils.cleantext import clean_xml_chars
 from calibre.utils.ipc import eintr_retry_call
 
 PDFTOHTML = 'pdftohtml' + ('.exe' if iswindows else '')
+creationflags = subprocess.DETACHED_PROCESS if iswindows else 0
 
 
 def popen(cmd, **kw):
     if iswindows:
-        kw['creationflags'] = subprocess.DETACHED_PROCESS
+        kw['creationflags'] = creationflags
     return subprocess.Popen(cmd, **kw)
 
 
@@ -73,9 +74,9 @@ def pdftohtml(output_dir, pdf_path, no_images, as_xml=False):
         logf.close()
         out = open(logf.name, 'rb').read().decode('utf-8', 'replace').strip()
         if ret != 0:
-            raise ConversionError('pdftohtml failed with return code: %d\n%s' % (ret, out))
+            raise ConversionError(f'pdftohtml failed with return code: {ret}\n{out}')
         if out:
-            prints("pdftohtml log:")
+            prints('pdftohtml log:')
             prints(out)
         if not os.path.exists(index) or os.stat(index).st_size < 100:
             raise DRMError()
@@ -84,7 +85,7 @@ def pdftohtml(output_dir, pdf_path, no_images, as_xml=False):
             with open(index, 'r+b') as i:
                 raw = i.read().decode('utf-8', 'replace')
                 raw = flip_images(raw)
-                raw = raw.replace('<head', '<!-- created by calibre\'s pdftohtml -->\n  <head', 1)
+                raw = raw.replace('<head', "<!-- created by calibre's pdftohtml -->\n  <head", 1)
                 i.seek(0)
                 i.truncate()
                 # versions of pdftohtml >= 0.20 output self closing <br> tags, this
@@ -94,7 +95,7 @@ def pdftohtml(output_dir, pdf_path, no_images, as_xml=False):
                 raw = re.sub(r'<a id="(\d+)"', r'<a id="p\1"', raw, flags=re.I)
                 raw = re.sub(r'<a href="index.html#(\d+)"', r'<a href="#p\1"', raw, flags=re.I)
                 raw = xml_replace_entities(raw)
-                raw = re.sub('[\u00a0\u2029]', ' ', raw)
+                raw = re.sub(r'[\u00a0\u2029]', ' ', raw)
 
                 i.write(raw.encode('utf-8'))
 
@@ -109,7 +110,7 @@ def pdftohtml(output_dir, pdf_path, no_images, as_xml=False):
 
         try:
             os.remove(pdfsrc)
-        except:
+        except Exception:
             pass
 
 
@@ -130,11 +131,10 @@ def parse_outline(raw, output_dir):
                 if child.tag == 'outline':
                     parent = toc.children[-1] if toc.children else toc
                     process_node(child, parent)
-                else:
-                    if child.text:
-                        page = child.get('page', '1')
-                        toc.add(child.text, 'index.html', 'p' + page)
-                        count[0] += 1
+                elif child.text:
+                    page = child.get('page', '1')
+                    toc.add(child.text, 'index.html', 'p' + page)
+                    count[0] += 1
         process_node(outline, toc)
         if count[0] > 2:
             root = create_ncx(toc, (lambda x:x), 'pdftohtml', 'en', 'pdftohtml')
@@ -152,7 +152,7 @@ def flip_image(img, flip):
 
 
 def flip_images(raw):
-    for match in re.finditer('<IMG[^>]+/?>', raw, flags=re.I):
+    for match in re.finditer(r'<IMG[^>]+/?>', raw, flags=re.I):
         img = match.group()
         m = re.search(r'class="(x|y|xy)flip"', img)
         if m is None:
@@ -174,5 +174,5 @@ def flip_images(raw):
         counter += 1
         return m.group(1).rstrip('/') + f' alt="Image {counter}"/>'
 
-    raw = re.sub('(<IMG[^>]+)/?>', add_alt, raw, flags=re.I)
+    raw = re.sub(r'(<IMG[^>]+)/?>', add_alt, raw, flags=re.I)
     return raw

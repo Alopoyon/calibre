@@ -1,22 +1,23 @@
 #!/usr/bin/env python
 
-
 __license__ = 'GPL v3'
 __copyright__ = '2015, Kovid Goyal <kovid at kovidgoyal.net>'
 
-import bz2
 import errno
+import http.client
 import importlib
 import json
 import math
 import os
 import sys
 import tempfile
+from compression import bz2
 from contextlib import suppress
 from functools import lru_cache
 from io import BytesIO
 from itertools import count
 from multiprocessing.pool import ThreadPool
+from queue import Empty, Queue
 from threading import Event, Thread
 from xml.sax.saxutils import escape
 
@@ -73,9 +74,7 @@ from calibre.utils.img import Canvas, image_from_data, optimize_jpeg, optimize_p
 from calibre.utils.resources import get_image_path as I
 from calibre.utils.resources import get_path as P
 from calibre.utils.zipfile import ZIP_STORED, ZipFile
-from polyglot import http_client
-from polyglot.builtins import as_bytes, iteritems, reraise
-from polyglot.queue import Empty, Queue
+from polyglot.builtins import as_bytes, reraise
 
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 THEME_COVER = 'icon-theme-cover.jpg'
@@ -101,7 +100,7 @@ def read_images_from_folder(path):
         name = os.path.relpath(filepath, path).replace(os.sep, '/')
         ext = name.rpartition('.')[-1]
         bname = os.path.basename(name)
-        if bname.startswith('.') or bname.startswith('_'):
+        if bname.startswith(('.', '_')):
             continue
         if ext == 'svg':
             render_svg(filepath)
@@ -211,7 +210,20 @@ def default_cover_icons(cols=5):
 
 def create_cover(report=None, icons=(), cols=5, size=120, padding=16, darkbg=False):
     icons = icons or tuple(default_cover_icons(cols))
-    rows = int(math.ceil(len(icons) / cols))
+    rows = math.ceil(len(icons) / cols)
+
+    def get_path_for_icon(icon: str) -> str:
+        if report is not None:
+            if icon in report.name_map:
+                return os.path.join(report.path, report.name_map[icon])
+            candidates = ('dark', 'light') if darkbg else ('light', 'dark')
+            for candidate in candidates:
+                base, ext = os.path.splitext(icon)
+                q = f'{base}-for-{candidate}-theme{ext}'
+                if q in report.name_map:
+                    return os.path.join(report.path, report.name_map[q])
+        return I(icon, allow_user_override=False)
+
     with Canvas(cols * (size + padding), rows * (size + padding), bgcolor='#444' if darkbg else '#eee') as canvas:
         y = -size - padding // 2
         x = 0
@@ -221,10 +233,7 @@ def create_cover(report=None, icons=(), cols=5, size=120, padding=16, darkbg=Fal
                 x = padding // 2
             else:
                 x += size + padding
-            if report and icon in report.name_map:
-                ipath = os.path.join(report.path, report.name_map[icon])
-            else:
-                ipath = I(icon, allow_user_override=False)
+            ipath = get_path_for_icon(icon)
             with open(ipath, 'rb') as f:
                 img = image_from_data(f.read())
             scaled, nwidth, nheight = fit_image(img.width(), img.height(), size, size)
@@ -237,7 +246,7 @@ def create_cover(report=None, icons=(), cols=5, size=120, padding=16, darkbg=Fal
 def verify_theme(report):
     must_use_qt()
     report.bad = bad = {}
-    for name, path in iteritems(report.name_map):
+    for name, path in report.name_map.items():
         reader = QImageReader(os.path.join(report.path, path))
         img = reader.read()
         if img.isNull():
@@ -340,7 +349,7 @@ class ThemeCreateDialog(Dialog):
         self.license.setText((theme.license or 'Unknown').strip())
         self.url.setText((theme.url or '').strip())
         if self.report.missing:
-            title =  _('%d icons missing in this theme') % len(self.report.missing)
+            title = _('%d icons missing in this theme') % len(self.report.missing)
         else:
             title = _('No missing icons')
         self.missing_icons_group.setTitle(title)
@@ -449,7 +458,7 @@ def create_themeball(report, theme_metadata, progress=None, abort=None):
         return None, None, None
     if progress is not None:
         progress(next(num), _('Compressing theme file'))
-    import lzma
+    from compression import lzma
     compressed = lzma.compress(icon_zip_data.getvalue(), format=lzma.FORMAT_XZ, preset=9)
     buf = BytesIO()
     prefix = report.name
@@ -498,8 +507,8 @@ def create_theme(folder=None, parent=None):
         icon_resource_manager.set_theme()
 # }}}
 
-# Choose Theme  {{{
 
+# Choose Theme {{{
 
 def download_cover(cover_url, etag=None, cached=b''):
     url = BASE_URL + cover_url
@@ -514,7 +523,7 @@ def download_cover(cover_url, etag=None, cached=b''):
         etag = response.getheader('ETag', None) or None
         return cached, etag
     except HTTPError as e:
-        if etag and e.code == http_client.NOT_MODIFIED:
+        if etag and e.code == http.client.NOT_MODIFIED:
             return cached, etag
         raise
 
@@ -609,8 +618,8 @@ class Delegate(QStyledItemDelegate):
         text = _('''\
             <p><b><big>{title}</big></b><p>
             <p>by <i>{author}</i> with <b>{number}</b> icons [{size}]</p>
-            <p>{description}</p>
             <p>Version: {version} Number of users: {usage:n}</p>
+            <p>{description}</p>
             <p><i>{visit}</i></p>
             ''').format(title=escape(theme.get('title') or _('Unknown')), author=escape(theme.get('author', _('Unknown'))),
                        number=theme.get('number', 0), description=escape(theme.get('description', '')),
@@ -620,6 +629,8 @@ class Delegate(QStyledItemDelegate):
         st = self.static_text_cache.get(text)
         if st is None:
             self.static_text_cache[text] = st = QStaticText(text)
+        st.setTextWidth(option.rect.width() - COVER_SIZE[0] - self.SPACING - 2)
+        painter.setClipRect(option.rect.adjusted(0, 0, 0, -2))
         painter.drawStaticText(COVER_SIZE[0] + self.SPACING, option.rect.top() + self.SPACING, st)
         painter.restore()
 
@@ -751,12 +762,12 @@ class ChooseThemeWidget(QWidget):
 
     def re_sort(self):
         ct = self.current_theme
-        self.themes.sort(key=lambda x:sort_key(x.get('title', '')))
+        self.themes.sort(key=lambda x: sort_key(x.get('title', '')))
         field = self.sort_on
         if field == 'number':
-            self.themes.sort(key=lambda x:x.get('number', 0), reverse=True)
+            self.themes.sort(key=lambda x: x.get('number', 0), reverse=True)
         elif field == 'usage':
-            self.themes.sort(key=lambda x:x.get('usage', 0), reverse=True)
+            self.themes.sort(key=lambda x: x.get('usage', 0), reverse=True)
         self.theme_list.clear()
         for theme in self.themes:
             i = QListWidgetItem(theme.get('title', '') + ' {} {}'.format(theme.get('number'), theme.get('usage', 0)), self.theme_list)
@@ -774,7 +785,7 @@ class ChooseThemeWidget(QWidget):
         return default_theme()
 
     def set_current_theme(self, name):
-        if not hasattr(self, "themes"):
+        if not hasattr(self, 'themes'):
             return False
         for i, t in enumerate(self.themes):
             if t.get('name') == name:
@@ -944,7 +955,7 @@ class ChooseTheme(Dialog):
         if themes_to_download:
             size = sum(t['compressed-size'] for t in themes_to_download.values())
             d = DownloadProgress(self, size)
-            d.canceled_signal.connect(lambda : setattr(self, 'keep_downloading', False))
+            d.canceled_signal.connect(lambda: setattr(self, 'keep_downloading', False))
             t = Thread(name='DownloadIconTheme', target=download)
             t.daemon = True
             t.start()

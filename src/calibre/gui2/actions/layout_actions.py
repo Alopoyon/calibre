@@ -20,6 +20,7 @@ class Panel(Enum):
     GRID_VIEW = 'gv'
     COVER_BROWSER = 'cb'
     QUICKVIEW = 'qv'
+    BOOKSHELF = 'bs'
 
 
 class SaveLayoutDialog(QDialog):
@@ -86,8 +87,8 @@ class LayoutActions(InterfaceAction):
                         menu=self.hidden_menu,
                         unique_name='Main window layout',
                         shortcut=None,
-                        text=_("Save and restore layout item sizes, and add/remove/toggle "
-                               "layout items such as the search bar, tag browser, etc. "),
+                        text=_('Save and restore layout item sizes, and add/remove/toggle '
+                               'layout items such as the search bar, tag browser, etc. '),
                         icon='layout.png',
                         triggered=self.show_menu)
 
@@ -268,6 +269,7 @@ class LayoutActions(InterfaceAction):
             GRID_VIEW: 'gv'
             COVER_BROWSER: 'cb'
             QUICKVIEW: 'qv'
+            BOOKSHELF: 'bs'
         :param show: If True, show the panel, otherwise hide the panel
         '''
         self._change_item(self._button_from_enum(name), show)
@@ -283,6 +285,7 @@ class LayoutActions(InterfaceAction):
             GRID_VIEW: 'gv'
             COVER_BROWSER: 'cb'
             QUICKVIEW: 'qv'
+            BOOKSHELF: 'bs'
         '''
         self._button_from_enum(name).isChecked()
 

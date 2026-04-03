@@ -18,7 +18,6 @@ from calibre.ptempfile import PersistentTemporaryDirectory, PersistentTemporaryF
 from calibre.startup import connect_lambda
 from calibre.utils.ipc.simple_worker import WorkerError, fork_job
 from calibre.utils.localization import ngettext
-from polyglot.builtins import iteritems
 
 # Start download {{{
 
@@ -96,7 +95,7 @@ class ConfirmDialog(QDialog):
         b.setIcon(QIcon.ic('default_cover.png'))
         b = self.b = self.bb.addButton(_('&Configure download'), QDialogButtonBox.ButtonRole.ActionRole)
         b.setIcon(QIcon.ic('config.png'))
-        connect_lambda(b.clicked, self, lambda self: show_config(self))
+        connect_lambda(b.clicked, self, lambda self: show_config(self))  # noqa: PLW0108
         l.addWidget(self.bb, 1, 0, 1, 2)
         b = self.bb.addButton(_('Download &both'),
                 QDialogButtonBox.ButtonRole.AcceptRole)
@@ -199,14 +198,14 @@ class Notifier(Thread):
         while self.keep_going:
             try:
                 names = os.listdir(self.tdir)
-            except:
+            except Exception:
                 pass
             else:
                 for x in names:
                     if x.endswith('.log'):
                         try:
                             book_id = int(x.partition('.')[0])
-                        except:
+                        except Exception:
                             continue
                         if book_id not in self.seen and book_id in self.title_map:
                             self.seen.add(book_id)
@@ -244,8 +243,7 @@ def download(all_ids, tf, db, do_identify, covers, ensure_fields,
             for i in ids:
                 title_map[i] = metadata[i].title
                 lm_map[i] = metadata[i].last_modified
-            metadata = {i:metadata_to_opf(mi, default_lang='und') for i, mi in
-                    iteritems(metadata)}
+            metadata = {i:metadata_to_opf(mi, default_lang='und') for i, mi in metadata.items()}
             try:
                 ret = fork_job('calibre.ebooks.metadata.sources.worker', 'main',
                         (do_identify, covers, metadata, ensure_fields, tdir),
@@ -264,16 +262,16 @@ def download(all_ids, tf, db, do_identify, covers, ensure_fields,
             failed_covers = failed_covers.union(fcovs)
             ans = ans.union(set(ids) - fids)
             for book_id in ids:
-                lp = os.path.join(tdir, '%d.log'%book_id)
+                lp = os.path.join(tdir, f'{book_id}.log')
                 if os.path.exists(lp):
                     with open(tf, 'ab') as dest, open(lp, 'rb') as src:
-                        dest.write(('\n'+'#'*20 + ' Log for %s '%title_map[book_id] +
+                        dest.write(('\n'+'#'*20 + f' Log for {title_map[book_id]} ' +
                             '#'*20+'\n').encode('utf-8'))
                         shutil.copyfileobj(src, dest)
 
         if abort.is_set():
             aborted = True
-        log('Download complete, with %d failures'%len(failed_ids))
+        log(f'Download complete, with {len(failed_ids)} failures')
         return (aborted, ans, tdir, tf, failed_ids, failed_covers, title_map,
                 lm_map, all_failed)
     finally:

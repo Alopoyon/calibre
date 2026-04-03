@@ -45,7 +45,7 @@ class Reader202(FormatReader):
         self.header_record = HeaderRecord(self.section_data(0))
 
         if self.header_record.version not in (2, 4):
-            raise EreaderError('Unknown book version %i.' % self.header_record.version)
+            raise EreaderError(f'Unknown book version {self.header_record.version}.')
 
         from calibre.ebooks.metadata.pdb import get_metadata
         self.mi = get_metadata(stream, False)
@@ -91,15 +91,14 @@ class Reader202(FormatReader):
 
         pml = ''
         for i in range(1, self.header_record.num_text_pages + 1):
-            self.log.debug('Extracting text page %i' % i)
+            self.log.debug(f'Extracting text page {i}')
             pml += self.get_text_page(i)
 
         title = self.mi.title
         if not isinstance(title, str):
             title = title.decode('utf-8', 'replace')
 
-        html = '<html><head><title>%s</title></head><body>%s</body></html>' % \
-            (title, pml_to_html(pml))
+        html = f'<html><head><title>{title}</title></head><body>{pml_to_html(pml)}</body></html>'
 
         with CurrentDir(output_dir):
             with open('index.html', 'wb') as index:
@@ -109,14 +108,14 @@ class Reader202(FormatReader):
         if not os.path.exists(os.path.join(output_dir, 'images/')):
             os.makedirs(os.path.join(output_dir, 'images/'))
         images = []
-        with CurrentDir(os.path.join(output_dir, 'images/')):
+        with CurrentDir(os.path.join(output_dir, 'images/')) as cwd:
             for i in range(self.header_record.non_text_offset, len(self.sections)):
                 name, img = self.get_image(i)
-                if name:
-                    name = as_unicode(name)
+                name = as_unicode(name or b'')
+                if name and (dest := self.image_dest(name, cwd)):
                     images.append(name)
-                    with open(name, 'wb') as imgf:
-                        self.log.debug('Writing image %s to images/' % name)
+                    with open(dest, 'wb') as imgf:
+                        self.log.debug(f'Writing image {name} to images/')
                         imgf.write(img)
 
         opf_path = self.create_opf(output_dir, images)
@@ -151,6 +150,15 @@ class Reader202(FormatReader):
 
         return pml
 
+    def image_dest(self, name, cwd):
+        base = os.path.abspath(cwd)
+        if not base.endswith(os.sep):
+            base += os.sep
+        ans = os.path.abspath(os.path.join(base, name))
+        if os.path.commonprefix([ans, base]) != base:
+            ans = ''
+        return ans
+
     def dump_images(self, output_dir):
         '''
         This is primarily used for debugging and 3rd party tools to
@@ -159,8 +167,10 @@ class Reader202(FormatReader):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        with CurrentDir(output_dir):
-            for i in range(0, self.header_record.num_image_pages):
+        with CurrentDir(output_dir) as cwd:
+            for i in range(self.header_record.num_image_pages):
                 name, img = self.get_image(self.header_record.image_data_offset + i)
-                with open(name, 'wb') as imgf:
-                    imgf.write(img)
+                name = as_unicode(name or b'')
+                if name and (dest := self.image_dest(name, cwd)):
+                    with open(dest, 'wb') as imgf:
+                        imgf.write(img)

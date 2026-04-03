@@ -4,6 +4,7 @@
 import os
 import shutil
 import sys
+from functools import lru_cache
 from itertools import count
 
 from qt.core import (
@@ -36,14 +37,13 @@ from qt.webengine import (
 )
 
 from calibre import as_unicode, prints
-from calibre.constants import FAKE_HOST, FAKE_PROTOCOL, __version__, in_develop_mode, is_running_from_develop, ismacos, iswindows
+from calibre.constants import DEBUG, FAKE_HOST, FAKE_PROTOCOL, __version__, in_develop_mode, is_running_from_develop, ismacos, iswindows
 from calibre.ebooks.metadata.book.base import field_metadata
 from calibre.ebooks.oeb.polish.utils import guess_type
 from calibre.gui2 import choose_images, config, error_dialog, safe_open_url
 from calibre.gui2.viewer import link_prefix_for_location_links, performance_monitor, url_for_book_in_library
-from calibre.gui2.viewer.config import load_viewer_profiles, save_viewer_profile, viewer_config_dir, vprefs
+from calibre.gui2.viewer.config import get_session_pref, load_viewer_profiles, save_viewer_profile, viewer_config_dir, vprefs
 from calibre.gui2.viewer.tts import TTS
-from calibre.gui2.webengine import RestartingWebEngineView
 from calibre.srv.code import get_translations_data
 from calibre.utils.filenames import make_long_path_useable
 from calibre.utils.localization import _, localize_user_manual_link
@@ -51,13 +51,12 @@ from calibre.utils.resources import get_path as P
 from calibre.utils.serialize import json_loads
 from calibre.utils.shared_file import share_open
 from calibre.utils.webengine import Bridge, create_script, from_js, insert_scripts, secure_webengine, send_reply, setup_profile, to_js
-from polyglot.builtins import as_bytes, iteritems
-from polyglot.functools import lru_cache
+from polyglot.builtins import as_bytes
 
 SANDBOX_HOST = FAKE_HOST.rpartition('.')[0] + '.sandbox'
 
-# Override network access to load data from the book {{{
 
+# Override network access to load data from the book {{{
 
 def set_book_path(path, pathtoebook):
     set_book_path.pathtoebook = pathtoebook
@@ -106,23 +105,15 @@ def background_image(encoded_fname=''):
         except FileNotFoundError:
             return 'image/jpeg', b''
     fname = bytes.fromhex(encoded_fname).decode()
-    img_path = os.path.join(viewer_config_dir, 'background-images', fname)
+    base = os.path.abspath(os.path.join(viewer_config_dir, 'background-images')) + os.sep
+    img_path = os.path.abspath(os.path.join(base, fname))
     mt = guess_type(fname)[0] or 'image/jpeg'
+    if not img_path.startswith(base):
+        return mt, b''
     try:
         with open(make_long_path_useable(img_path), 'rb') as f:
             return mt, f.read()
     except FileNotFoundError:
-        if fname.startswith('https://') or fname.startswith('http://'):
-            from calibre import browser
-            br = browser()
-            try:
-                with br.open(fname) as src:
-                    data = src.read()
-            except Exception:
-                return mt, b''
-            with open(make_long_path_useable(img_path), 'wb') as dest:
-                dest.write(data)
-            return mt, data
         return mt, b''
 
 
@@ -140,14 +131,14 @@ def handle_mathjax_request(rq, name):
             with open(path, 'rb') as f:
                 raw = f.read()
         except OSError as err:
-            prints(f"Failed to get mathjax file: {name} with error: {err}", file=sys.stderr)
+            prints(f'Failed to get mathjax file: {name} with error: {err}', file=sys.stderr)
             rq.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
             return
         if name.endswith('/startup.js'):
             raw = P('pdf-mathjax-loader.js', data=True, allow_user_override=False) + raw
         send_reply(rq, mt, raw)
     else:
-        prints(f"Failed to get mathjax file: {name} outside mathjax directory", file=sys.stderr)
+        prints(f'Failed to get mathjax file: {name} outside mathjax directory', file=sys.stderr)
         rq.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
 
 
@@ -212,7 +203,7 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
         if fail_code is None:
             fail_code = QWebEngineUrlRequestJob.Error.UrlNotFound
         rq.fail(fail_code)
-        prints(f"Blocking FAKE_PROTOCOL request: {rq.requestUrl().toString()} with code: {fail_code}")
+        prints(f'Blocking FAKE_PROTOCOL request: {rq.requestUrl().toString()} with code: {fail_code}')
 
 # }}}
 
@@ -250,6 +241,7 @@ class ViewerBridge(Bridge):
     view_created = from_js(object)
     on_iframe_ready = from_js()
     content_file_changed = from_js(object)
+    update_last_read_position = from_js(object, object)
     set_session_data = from_js(object, object)
     set_local_storage = from_js(object, object)
     reload_book = from_js()
@@ -263,7 +255,6 @@ class ViewerBridge(Bridge):
     search_result_not_found = from_js(object)
     search_result_discovered = from_js(object)
     find_next = from_js(object)
-    quit = from_js()
     update_current_toc_nodes = from_js(object)
     toggle_full_screen = from_js()
     report_cfi = from_js(object, object)
@@ -295,10 +286,12 @@ class ViewerBridge(Bridge):
     show_book_folder = from_js()
     show_help = from_js(object)
     update_reading_rates = from_js(object)
+    reset_reading_rates = from_js()
     profile_op = from_js(object, object, object)
 
     create_view = to_js()
     start_book_load = to_js()
+    redraw_tts_bar = to_js()
     goto_toc_node = to_js()
     goto_cfi = to_js()
     full_screen_state_changed = to_js()
@@ -397,8 +390,11 @@ class WebPage(QWebEnginePage):
         if url.scheme() in (FAKE_PROTOCOL, 'data'):
             return True
         if url.scheme() in ('http', 'https', 'calibre') and req_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            if DEBUG:
+                prints('Open URL from book:', url.toString())
             safe_open_url(url)
-        prints('Blocking navigation request to:', url.toString())
+        else:
+            prints('Blocking navigation request to:', url.toString(), file=sys.stderr)
         return False
 
     def go_to_anchor(self, anchor):
@@ -462,7 +458,7 @@ def system_colors():
     return ans
 
 
-class WebView(RestartingWebEngineView):
+class WebView(QWebEngineView):
 
     cfi_changed = pyqtSignal(object)
     reload_book = pyqtSignal()
@@ -476,7 +472,6 @@ class WebView(RestartingWebEngineView):
     new_bookmark = pyqtSignal(object)
     toggle_inspector = pyqtSignal()
     toggle_lookup = pyqtSignal(object)
-    quit = pyqtSignal()
     update_current_toc_nodes = pyqtSignal(object)
     toggle_full_screen = pyqtSignal()
     ask_for_open = pyqtSignal(object)
@@ -497,12 +492,14 @@ class WebView(RestartingWebEngineView):
     close_prep_finished = pyqtSignal(object)
     highlights_changed = pyqtSignal(object)
     update_reading_rates = pyqtSignal(object)
+    reset_reading_rates = pyqtSignal()
     edit_book = pyqtSignal(object, object, object)
     shortcuts_changed = pyqtSignal(object)
     paged_mode_changed = pyqtSignal()
     standalone_misc_settings_changed = pyqtSignal(object)
     view_created = pyqtSignal(object)
     content_file_changed = pyqtSignal(str)
+    update_last_read_position = pyqtSignal(object, object)
     change_toolbar_actions = pyqtSignal(object)
 
     def __init__(self, parent=None):
@@ -510,12 +507,13 @@ class WebView(RestartingWebEngineView):
         self.callback_id_counter = count()
         self.callback_map = {}
         self.current_cfi = self.current_content_file = None
-        RestartingWebEngineView.__init__(self, parent)
+        super().__init__(parent)
         self.tts = TTS(self)
         self.tts.settings_changed.connect(self.tts_settings_changed)
         self.tts.event_received.connect(self.tts_event_received)
+        self.tts.configured.connect(self.redraw_tts_bar)
         self.dead_renderer_error_shown = False
-        self.render_process_failed.connect(self.render_process_died)
+        self.renderProcessTerminated.connect(self.render_process_died)
         w = self.screen().availableSize().width()
         QApplication.instance().palette_changed.connect(self.palette_changed)
         self.show_home_page_on_ready = True
@@ -527,6 +525,7 @@ class WebView(RestartingWebEngineView):
         self.bridge.on_iframe_ready.connect(self.on_iframe_ready)
         self.bridge.view_created.connect(self.on_view_created)
         self.bridge.content_file_changed.connect(self.on_content_file_changed)
+        self.bridge.update_last_read_position.connect(self.update_last_read_position)
         self.bridge.set_session_data.connect(self.set_session_data)
         self.bridge.set_local_storage.connect(self.set_local_storage)
         self.bridge.reload_book.connect(self.reload_book)
@@ -562,6 +561,7 @@ class WebView(RestartingWebEngineView):
         self.bridge.close_prep_finished.connect(self.close_prep_finished)
         self.bridge.highlights_changed.connect(self.highlights_changed)
         self.bridge.update_reading_rates.connect(self.update_reading_rates)
+        self.bridge.reset_reading_rates.connect(self.reset_reading_rates)
         self.bridge.profile_op.connect(self.profile_op)
         self.bridge.edit_book.connect(self.edit_book)
         self.bridge.show_book_folder.connect(self.show_book_folder)
@@ -632,7 +632,7 @@ class WebView(RestartingWebEngineView):
         self.dead_renderer_error_shown = True
         error_dialog(self, _('Render process crashed'), _(
             'The Qt WebEngine Render process has crashed.'
-            ' You should try restarting the viewer.') , show=True)
+            ' You should try restarting the viewer.'), show=True)
 
     def event(self, event):
         if event.type() == QEvent.Type.ChildPolished:
@@ -661,7 +661,7 @@ class WebView(RestartingWebEngineView):
         ui_data = {
             'all_font_families': QFontDatabase.families(),
             'ui_font_family': family,
-            'ui_font_sz': f'{fi.pixelSize()}px',
+            'ui_font_sz': f'{fi.pointSizeF()}pt',
             'show_home_page_on_ready': self.show_home_page_on_ready,
             'system_colors': system_colors(),
             'QT_VERSION': QT_VERSION,
@@ -671,7 +671,7 @@ class WebView(RestartingWebEngineView):
         self.bridge.create_view(
             vprefs['session_data'], vprefs['local_storage'], field_metadata.all_metadata(), ui_data)
         performance_monitor('bridge ready')
-        for func, args in iteritems(self.pending_bridge_ready_actions):
+        for func, args in self.pending_bridge_ready_actions.items():
             getattr(self.bridge, func)(*args)
 
     def on_iframe_ready(self):
@@ -768,6 +768,9 @@ class WebView(RestartingWebEngineView):
 
     def show_home_page(self):
         self.execute_when_ready('show_home_page')
+
+    def redraw_tts_bar(self):
+        self.execute_when_ready('redraw_tts_bar', get_session_pref('tts_bar_position', 'float', None))
 
     def change_background_image(self, img_id):
         files = choose_images(self, 'viewer-background-image', _('Choose background image'), formats=['png', 'gif', 'jpg', 'jpeg', 'webp'])

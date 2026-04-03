@@ -38,7 +38,7 @@ class RequestInterceptor(QWebEngineUrlRequestInterceptor):
             request_info.block(True)
             return
         qurl = request_info.requestUrl()
-        if qurl.scheme() not in (FAKE_PROTOCOL,):
+        if qurl.scheme() != FAKE_PROTOCOL:
             default_log.warn(f'Blocking URL request {qurl.toString()} as it is not for a resource related to the HTML file being rendered')
             request_info.block(True)
             return
@@ -79,7 +79,7 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
         if fail_code is None:
             fail_code = QWebEngineUrlRequestJob.Error.UrlNotFound
         rq.fail(fail_code)
-        print(f"Blocking FAKE_PROTOCOL request: {rq.requestUrl().toString()} with code: {fail_code}", file=sys.stderr)
+        print(f'Blocking FAKE_PROTOCOL request: {rq.requestUrl().toString()} with code: {fail_code}', file=sys.stderr)
 
 
 class Render(QWebEnginePage):
@@ -131,10 +131,9 @@ class Render(QWebEnginePage):
             if monotonic() - self.start_time > PRINT_TIMEOUT:
                 self.hang_timer.stop()
                 QApplication.instance().exit(4)
-        else:
-            if monotonic() - self.start_time > LOAD_TIMEOUT:
-                self.hang_timer.stop()
-                QApplication.instance().exit(3)
+        elif monotonic() - self.start_time > LOAD_TIMEOUT:
+            self.hang_timer.stop()
+            QApplication.instance().exit(3)
 
     def start_print(self, data):
         margins = QMarginsF(0, 0, 0, 0)
@@ -145,7 +144,7 @@ class Render(QWebEnginePage):
                     margins = QMarginsF(*data['margins'])
                 if 'size' in data:
                     sz = data['size']
-                    if type(getattr(QPageSize, sz, None)) is type(QPageSize.PageSizeId.A4):  # noqa
+                    if type(getattr(QPageSize, sz, None)) is type(QPageSize.PageSizeId.A4):
                         page_size = QPageSize(getattr(QPageSize, sz))
                     else:
                         from calibre.ebooks.pdf.image_writer import parse_pdf_page_size

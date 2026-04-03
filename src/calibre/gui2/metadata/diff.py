@@ -51,12 +51,11 @@ from calibre.startup import connect_lambda
 from calibre.utils.date import UNDEFINED_DATE
 from calibre.utils.icu import lower as icu_lower
 from calibre.utils.localization import ngettext
-from polyglot.builtins import iteritems, itervalues
 
 Widgets = namedtuple('Widgets', 'new old label button')
 
-# Widgets {{{
 
+# Widgets {{{
 
 class LineEdit(EditWithComplete):
 
@@ -250,7 +249,7 @@ class SeriesEdit(LineEdit):
         val = str(self.text()).strip()
         try:
             series_index = float(val.rpartition('[')[-1].rstrip(']').strip())
-        except:
+        except Exception:
             series_index = 1.0
         series = val.rpartition('[')[0].strip() or val.rpartition('[')[-1].strip() or None
         mi.set(self.field, series)
@@ -265,7 +264,7 @@ class SeriesEdit(LineEdit):
             return
         num = db.get_next_series_num_for(series)
         sidx = fmt_sidx(num)
-        self.setText(self.text() + ' [%s]' % sidx)
+        self.setText(self.text() + f' [{sidx}]')
 
 
 class IdentifiersEdit(LineEdit):
@@ -279,11 +278,11 @@ class IdentifiersEdit(LineEdit):
     @property
     def as_dict(self):
         parts = (x.strip() for x in self.current_val.split(',') if x.strip())
-        return {k:v for k, v in iteritems({x.partition(':')[0].strip():x.partition(':')[-1].strip() for x in parts}) if k and v}
+        return {k:v for k, v in {x.partition(':')[0].strip():x.partition(':')[-1].strip() for x in parts}.items() if k and v}
 
     @as_dict.setter
     def as_dict(self, val):
-        val = (f'{k}:{v}' for k, v in iteritems(val))
+        val = (f'{k}:{v}' for k, v in val.items())
         self.setText(', '.join(val))
         self.setCursorPosition(0)
 
@@ -419,7 +418,7 @@ class CoverView(QWidget):
             f = p.font()
             f.setBold(True)
             p.setFont(f)
-            sz = '\u00a0%d x %d\u00a0'%(self.pixmap.width(), self.pixmap.height())
+            sz = f'\xa0{self.pixmap.width()} x {self.pixmap.height()}\xa0'
             flags = int(Qt.AlignmentFlag.AlignBottom|Qt.AlignmentFlag.AlignRight|Qt.TextFlag.TextSingleLine)
             szrect = p.boundingRect(sztgt, flags, sz)
             p.fillRect(szrect.adjusted(0, 0, 0, 4), QColor(0, 0, 0, 200))
@@ -485,7 +484,7 @@ class CompareSingle(QWidget):
             if isinstance(neww, SeriesEdit):
                 neww.set_db(db.new_api)
             oldw = cls(field, False, self, m, extra)
-            newl = QLabel('&%s:' % m['name'])
+            newl = QLabel('&{}:'.format(m['name']))
             newl.setBuddy(neww)
             button = RightClickButton(self)
             button.setIcon(QIcon.ic('back.png'))
@@ -507,6 +506,14 @@ class CompareSingle(QWidget):
                 m.addAction(button.toolTip()).triggered.connect(button.click)
                 m.actions()[0].setIcon(button.icon())
                 m.addAction(_('Merge tags')).triggered.connect(self.merge_tags)
+                m.actions()[1].setIcon(QIcon.ic('merge.png'))
+            elif field == 'comments':
+                button.m = m = QMenu(button)
+                button.setMenu(m)
+                button.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+                m.addAction(button.toolTip()).triggered.connect(button.click)
+                m.actions()[0].setIcon(button.icon())
+                m.addAction(_('Merge Comments')).triggered.connect(self.merge_comments)
                 m.actions()[1].setIcon(QIcon.ic('merge.png'))
 
             if cls is CoverView:
@@ -554,23 +561,28 @@ class CompareSingle(QWidget):
     def merge_tags(self):
         widgets = self.widgets['tags']
         neww, oldw = widgets[:2]
-        val = oldw.value
-        lval = {icu_lower(x) for x in val}
-        extra = [x for x in neww.value if icu_lower(x) not in lval]
+        lval = {icu_lower(x) for x in neww.value}
+        extra = [x for x in oldw.value if icu_lower(x) not in lval]
         if extra:
-            neww.value = val + extra
+            neww.value += extra
+
+    def merge_comments(self):
+        widgets = self.widgets['comments']
+        neww, oldw = widgets[:2]
+        val = oldw.current_val
+        neww.current_val = (neww.current_val or '') + '\n\n' + (val or '')
 
     def __call__(self, oldmi, newmi):
         self.current_mi = newmi
         self.initial_vals = {}
-        for field, widgets in iteritems(self.widgets):
+        for field, widgets in self.widgets.items():
             widgets.old.from_mi(oldmi)
             widgets.new.from_mi(newmi)
             self.initial_vals[field] = widgets.new.current_val
 
     def apply_changes(self):
         changed = False
-        for field, widgets in iteritems(self.widgets):
+        for field, widgets in self.widgets.items():
             val = widgets.new.current_val
             if val != self.initial_vals[field]:
                 widgets.new.to_mi(self.current_mi)
@@ -625,7 +637,6 @@ class CoverZoom(QWidget):
 
 
 class CompareMany(QDialog):
-
 
     def __init__(self, ids, get_metadata, field_metadata, parent=None,
                  window_title=None,
@@ -747,26 +758,21 @@ class CompareMany(QDialog):
         b.setFocus(Qt.FocusReason.OtherFocusReason)
         self.next_called = False
 
-
     def show_zoomed_cover(self, pixmap):
         self.cover_zoom.set_pixmap(pixmap)
         self.stack.setCurrentIndex(1)
-
 
     @property
     def mark_rejected(self):
         return self.markq.isChecked()
 
-
     def action_button_clicked(self):
         self.action_button_action(self.ids[0])
-
 
     def accept(self):
         self.save_geometry(gprefs, 'diff_dialog_geom')
         self.compare_widget.save_comments_controls_state()
         super().accept()
-
 
     def reject(self):
         if self.stack.currentIndex() == 1:
@@ -780,11 +786,9 @@ class CompareMany(QDialog):
         self.compare_widget.save_comments_controls_state()
         super().reject()
 
-
     @property
     def current_mi(self):
         return self.compare_widget.current_mi
-
 
     def show_current_item(self):
         self.setWindowTitle(self.window_title + _(' [%(num)d of %(tot)d]') % dict(
@@ -819,7 +823,6 @@ class CompareMany(QDialog):
             return self.accept()
         self.show_current_item()
 
-
     def previous_item(self):
         if self.previous_items:
             # get the last book id from the previous items list and remove it from the previous items list
@@ -838,7 +841,6 @@ class CompareMany(QDialog):
             self.ids.insert(0, last_previous_item)
             self.show_current_item()
 
-
     def accept_all_remaining(self):
         self.next_item(True)
         for id_ in self.ids:
@@ -846,7 +848,6 @@ class CompareMany(QDialog):
             self.accepted[id_] = (False, newmi)
         self.ids = []
         self.accept()
-
 
     def reject_all_remaining(self):
         from calibre.gui2.dialogs.confirm_delete import confirm
@@ -862,7 +863,6 @@ class CompareMany(QDialog):
             self.accepted[id_] = (False, None)
         self.ids = []
         self.accept()
-
 
     def keyPressEvent(self, ev):
         if ev.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
@@ -884,6 +884,6 @@ if __name__ == '__main__':
         return list(map(gm, ids[x]))
     d = CompareMany(list(range(len(ids))), get_metadata, db.field_metadata, db=db)
     d.exec()
-    for changed, mi in itervalues(d.accepted):
+    for changed, mi in d.accepted.values():
         if changed and mi is not None:
             print(mi)

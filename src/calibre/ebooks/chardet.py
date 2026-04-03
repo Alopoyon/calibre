@@ -70,9 +70,8 @@ def replace_encoding_declarations(raw, enc='utf-8', limit=50*1024):
     if is_binary:
         if not isinstance(enc, bytes):
             enc = enc.encode('ascii')
-    else:
-        if isinstance(enc, bytes):
-            enc = enc.decode('ascii')
+    elif isinstance(enc, bytes):
+        enc = enc.decode('ascii')
 
     def sub(m):
         ans = m.group()
@@ -100,7 +99,7 @@ def find_declared_encoding(raw, limit=50*1024):
                 return ans
 
 
-_CHARSET_ALIASES = {"macintosh" : "mac-roman", "x-sjis" : "shift-jis"}
+_CHARSET_ALIASES = {'macintosh': 'mac-roman', 'x-sjis': 'shift-jis', 'mac-centraleurope': 'cp1250'}
 
 
 def detect(bytestring):
@@ -108,6 +107,7 @@ def detect(bytestring):
         bytestring = bytestring.encode('utf-8', 'replace')
     from calibre_extensions.uchardet import detect as implementation
     enc = implementation(bytestring).lower()
+    enc = _CHARSET_ALIASES.get(enc, enc)
     return {'encoding': enc, 'confidence': 1 if enc else 0}
 
 
